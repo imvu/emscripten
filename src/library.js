@@ -4839,22 +4839,20 @@ LibraryManager.library = {
   // RTTI hacks for exception handling, defining type_infos for common types.
   // The values are dummies. We simply use the addresses of these statically
   // allocated variables as unique identifiers.
-  // type_info for int.
-  _ZTIi: [0],
-  // type_info for long.
-  _ZTIl: [0],
-  // type_info for long long.
-  _ZTIx: [0],
-  // type_info for float.
-  _ZTIf: [0],
-  // type_info for double.
-  _ZTId: [0],
-  // type_info for char.
-  _ZTIc: [0],
-  // type_info for void.
-  _ZTIv: [0],
-  // type_info for void*.
-  _ZTIPv: [0],
+  _ZTIi: [0],  // int
+  _ZTIj: [0],  // unsigned int
+  _ZTIl: [0],  // long
+  _ZTIm: [0],  // unsigned long
+  _ZTIx: [0],  // long long
+  _ZTIf: [0],  // float
+  _ZTId: [0],  // double
+  _ZTIc: [0],  // char
+  _ZTIa: [0],  // signed char
+  _ZTIh: [0],  // unsigned char
+  _ZTIs: [0],  // short
+  _ZTIt: [0],  // unsigned short
+  _ZTIv: [0],  // void
+  _ZTIPv: [0], // void*
 
   llvm_uadd_with_overflow_i8: function(x, y) {
     x = x & 0xff;
