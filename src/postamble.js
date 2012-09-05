@@ -45,6 +45,7 @@ function run(args) {
 
   function doRun() {
     var ret = 0;
+    calledRun = true;
     if (Module['_main']) {
       preMain();
       ret = Module.callMain(args);
@@ -77,6 +78,13 @@ function run(args) {
 Module['run'] = run;
 
 // {{PRE_RUN_ADDITIONS}}
+
+if (Module['preInit']) {
+  if (typeof Module['preInit'] == 'function') Module['preInit'] = [Module['preInit']];
+  while (Module['preInit'].length > 0) {
+    Module['preInit'].pop()();
+  }
+}
 
 initRuntime();
 

@@ -10,20 +10,29 @@ var LibraryGL = {
     debug: true,
 #endif
 
-    counter: 1,
-    buffers: {},
-    programs: {},
-    framebuffers: {},
-    renderbuffers: {},
-    textures: {},
-    uniforms: {},
-    shaders: {},
+    counter: 1, // 0 is reserved as 'null' in gl
+    buffers: [],
+    programs: [],
+    framebuffers: [],
+    renderbuffers: [],
+    textures: [],
+    uniforms: [],
+    shaders: [],
 
     packAlignment: 4,   // default alignment is 4 bytes
     unpackAlignment: 4, // default alignment is 4 bytes
 
     init: function() {
       Browser.moduleContextCreatedCallbacks.push(GL.initExtensions);
+    },
+
+    // Get a new ID for a texture/buffer/etc., while keeping the table dense and fast. Creation is farely rare so it is worth optimizing lookups later.
+    getNewId: function(table) {
+      var ret = GL.counter++;
+      for (var i = table.length; i < ret; i++) {
+        table[i] = null;
+      }
+      return ret;
     },
 
     // Linear lookup in one of the tables (buffers, programs, etc.). TODO: consider using a weakmap to make this faster, if it matters
@@ -168,6 +177,8 @@ var LibraryGL = {
     initExtensions: function() {
       if (GL.initExtensions.done) return;
       GL.initExtensions.done = true;
+
+      if (!Module.useWebGL) return; // an app might link both gl and 2d backends
 
       GL.compressionExt = Module.ctx.getExtension('WEBGL_compressed_texture_s3tc') ||
                           Module.ctx.getExtension('MOZ_WEBGL_compressed_texture_s3tc') ||
@@ -337,7 +348,7 @@ var LibraryGL = {
 
   glGenTextures: function(n, textures) {
     for (var i = 0; i < n; i++) {
-      var id = GL.counter++;
+      var id = GL.getNewId(GL.textures); 
       GL.textures[id] = Module.ctx.createTexture();
       {{{ makeSetValue('textures', 'i*4', 'id', 'i32') }}};
     }
@@ -376,6 +387,8 @@ var LibraryGL = {
       var data = GL.getTexPixelData(type, format, width, height, pixels, internalFormat);
       pixels = data.pixels;
       internalFormat = data.internalFormat;
+    } else {
+      pixels = null;
     }
     Module.ctx.texImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
   },
@@ -384,6 +397,8 @@ var LibraryGL = {
     if (pixels) {
       var data = GL.getTexPixelData(type, format, width, height, pixels, -1);
       pixels = data.pixels;
+    } else {
+      pixels = null;
     }
     Module.ctx.texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
   },
@@ -414,7 +429,7 @@ var LibraryGL = {
 
   glGenBuffers: function(n, buffers) {
     for (var i = 0; i < n; i++) {
-      var id = GL.counter++;
+      var id = GL.getNewId(GL.buffers);
       GL.buffers[id] = Module.ctx.createBuffer();
       {{{ makeSetValue('buffers', 'i*4', 'id', 'i32') }}};
     }
@@ -451,7 +466,7 @@ var LibraryGL = {
 
   glGenRenderbuffers: function(n, renderbuffers) {
     for (var i = 0; i < n; i++) {
-      var id = GL.counter++;
+      var id = GL.getNewId(GL.renderbuffers);
       GL.renderbuffers[id] = Module.ctx.createRenderbuffer();
       {{{ makeSetValue('renderbuffers', 'i*4', 'id', 'i32') }}};
     }
@@ -507,7 +522,7 @@ var LibraryGL = {
     name = Pointer_stringify(name);
     var loc = Module.ctx.getUniformLocation(GL.programs[program], name);
     if (!loc) return -1;
-    var id = GL.counter++;
+    var id = GL.getNewId(GL.uniforms);
     GL.uniforms[id] = loc;
     return id;
   },
@@ -720,7 +735,7 @@ var LibraryGL = {
   },
 
   glCreateShader: function(shaderType) {
-    var id = GL.counter++;
+    var id = GL.getNewId(GL.shaders);
     GL.shaders[id] = Module.ctx.createShader(shaderType);
     return id;
   },
@@ -803,7 +818,7 @@ var LibraryGL = {
   },
 
   glCreateProgram: function() {
-    var id = GL.counter++;
+    var id = GL.getNewId(GL.programs);
     GL.programs[id] = Module.ctx.createProgram();
     return id;
   },
@@ -869,7 +884,7 @@ var LibraryGL = {
 
   glGenFramebuffers: function(n, ids) {
     for (var i = 0; i < n; ++i) {
-      var id = GL.counter++;
+      var id = GL.getNewId(GL.framebuffers);
       GL.framebuffers[id] = Module.ctx.createFramebuffer();
       {{{ makeSetValue('ids', 'i*4', 'id', 'i32') }}};
     }
@@ -1358,7 +1373,7 @@ var LibraryGL = {
   // GL Immediate mode
 
   $GLImmediate__postset: 'Browser.moduleContextCreatedCallbacks.push(function() { GL.immediate.init() });',
-  $GLImmediate__deps: ['$Browser'],
+  $GLImmediate__deps: ['$Browser', '$GL'],
   $GLImmediate: {
     MAX_TEXTURES: 7,
 
@@ -1370,8 +1385,9 @@ var LibraryGL = {
     vertexCounter: 0,
     mode: 0,
 
-    rendererCache: {},
-    rendererComponents: {}, // small cache for calls inside glBegin/end. counts how many times the element was seen
+    rendererCache: null,
+    rendererCacheItemTemplate: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null], // 16 nulls
+    rendererComponents: [], // small cache for calls inside glBegin/end. counts how many times the element was seen
     rendererComponentPointer: 0, // next place to start a glBegin/end component
     lastRenderer: null, // used to avoid cleaning up and re-preparing the same renderer
     lastArrayBuffer: null, // used in conjunction with lastRenderer
@@ -1397,7 +1413,6 @@ var LibraryGL = {
     TEXTURE6: 9,
     NUM_ATTRIBUTES: 10,
     NUM_TEXTURES: 7,
-    ATTRIBUTE_BY_NAME: {},
 
     totalEnabledClientAttributes: 0,
     enabledClientAttributes: [0, 0],
@@ -1407,18 +1422,19 @@ var LibraryGL = {
     clientActiveTexture: 0,
     clientColor: null,
 
-    byteSizeByType: {
-      0x1400: 1, // GL_BYTE
-      0x1401: 1, // GL_UNSIGNED_BYTE
-      0x1402: 2, // GL_SHORT
-      0x1403: 2, // GL_UNSIGNED_SHORT
-      0x1404: 4, // GL_INT
-      0x1405: 4, // GL_UNSIGNED_INT
-      0x1406: 4  // GL_FLOAT
-    },
+    byteSizeByTypeRoot: 0x1400, // GL_BYTE
+    byteSizeByType: [
+      1, // GL_BYTE
+      1, // GL_UNSIGNED_BYTE
+      2, // GL_SHORT
+      2, // GL_UNSIGNED_SHORT
+      4, // GL_INT
+      4, // GL_UNSIGNED_INT
+      4  // GL_FLOAT
+    ],
 
     setClientAttribute: function(name, size, type, stride, pointer) {
-      var attrib = this.clientAttributes[GL.immediate.ATTRIBUTE_BY_NAME[name]];
+      var attrib = this.clientAttributes[name];
       attrib.name = name;
       attrib.size = size;
       attrib.type = type;
@@ -1435,26 +1451,17 @@ var LibraryGL = {
     tempQuadIndexBuffer: null,
 
     generateTempBuffers: function() {
-      function ceilPower2(x) {
-        return Math.pow(2, Math.ceil(Math.log(i || 1)/Math.log(2)));
-      }
       this.tempBufferIndexLookup = new Uint8Array(this.MAX_TEMP_BUFFER_SIZE+1);
-      var last = -1, curr = -1;
-      for (var i = 0; i <= this.MAX_TEMP_BUFFER_SIZE; i++) {
-        var size = ceilPower2(i);
-        if (size != last) {
-          curr++;
-          last = size;
-        }
-        this.tempBufferIndexLookup[i] = curr;
-      }
       this.tempVertexBuffers = [];
       this.tempIndexBuffers = [];
-      last = -1;
+      var last = -1, curr = -1;
+      var size = 1;
       for (var i = 0; i <= this.MAX_TEMP_BUFFER_SIZE; i++) {
-        var size = ceilPower2(i);
-        curr = this.tempBufferIndexLookup[i];
+        if (i > size) {
+          size <<= 1;
+        }
         if (size != last) {
+          curr++;
           this.tempVertexBuffers[curr] = Module.ctx.createBuffer();
           Module.ctx.bindBuffer(Module.ctx.ARRAY_BUFFER, this.tempVertexBuffers[curr]);
           Module.ctx.bufferData(Module.ctx.ARRAY_BUFFER, size, Module.ctx.DYNAMIC_DRAW);
@@ -1465,8 +1472,8 @@ var LibraryGL = {
           Module.ctx.bindBuffer(Module.ctx.ELEMENT_ARRAY_BUFFER, null);
           last = size;
         }
+        this.tempBufferIndexLookup[i] = curr;
       }
-
       // GL_QUAD indexes can be precalculated
       this.tempQuadIndexBuffer = Module.ctx.createBuffer();
       Module.ctx.bindBuffer(Module.ctx.ELEMENT_ARRAY_BUFFER, this.tempQuadIndexBuffer);
@@ -1497,19 +1504,19 @@ var LibraryGL = {
       if (!this.rendererComponents[name]) {
         this.rendererComponents[name] = 1;
 #if ASSERTIONS
-        assert(!this.enabledClientAttributes[this.ATTRIBUTE_BY_NAME[name]]); // cannot get mixed up with this, for example we will disable this later
+        assert(!this.enabledClientAttributes[name]); // cannot get mixed up with this, for example we will disable this later
 #endif
-        this.enabledClientAttributes[this.ATTRIBUTE_BY_NAME[name]] = true;
+        this.enabledClientAttributes[name] = true;
         this.setClientAttribute(name, size, type, 0, this.rendererComponentPointer);
-        this.rendererComponentPointer += size * this.byteSizeByType[type];
+        this.rendererComponentPointer += size * this.byteSizeByType[type - this.byteSizeByTypeRoot];
       } else {
         this.rendererComponents[name]++;
       }
     },
 
     disableBeginEndClientAttributes: function() {
-      for (var name in this.rendererComponents) {
-        this.enabledClientAttributes[this.ATTRIBUTE_BY_NAME[name]] = false;
+      for (var i = 0; i < this.NUM_ATTRIBUTES; i++) {
+        if (this.rendererComponents[i]) this.enabledClientAttributes[i] = false;
       }
     },
 
@@ -1518,25 +1525,38 @@ var LibraryGL = {
       // we maintain a cache of renderers, optimized to not generate garbage
       var attributes = GL.immediate.liveClientAttributes;
       var cacheItem = GL.immediate.rendererCache;
+      var temp;
       for (var i = 0; i < attributes.length; i++) {
         var attribute = attributes[i];
-        if (!cacheItem[attribute.name]) cacheItem[attribute.name] = {};
-        cacheItem = cacheItem[attribute.name];
-        if (!cacheItem[attribute.size]) cacheItem[attribute.size] = {};
-        cacheItem = cacheItem[attribute.size];
-        if (!cacheItem[attribute.type]) cacheItem[attribute.type] = {};
-        cacheItem = cacheItem[attribute.type];
+        temp = cacheItem[attribute.name];
+        cacheItem = temp ? temp : (cacheItem[attribute.name] = GL.immediate.rendererCacheItemTemplate.slice());
+        temp = cacheItem[attribute.size];
+        cacheItem = temp ? temp : (cacheItem[attribute.size] = GL.immediate.rendererCacheItemTemplate.slice());
+        var typeIndex = attribute.type - GL.immediate.byteSizeByTypeRoot; // ensure it starts at 0 to keep the cache items dense
+        temp = cacheItem[typeIndex];
+        cacheItem = temp ? temp : (cacheItem[typeIndex] = GL.immediate.rendererCacheItemTemplate.slice());
       }
+      var fogParam;
       if (GLEmulation.fogEnabled) {
-        var fogParam = GLEmulation.fogMode;
+        switch (GLEmulation.fogMode) {
+          case 0x0801: // GL_EXP2
+            fogParam = 1;
+            break;
+          case 0x2601: // GL_LINEAR
+            fogParam = 2;
+            break;
+          default: // default to GL_EXP
+            fogParam = 3;
+            break;
+        }
       } else {
-        var fogParam = 0; // all valid modes are non-zero
+        fogParam = 0;
       }
-      if (!cacheItem[fogParam]) cacheItem[fogParam] = {};
-      cacheItem = cacheItem[fogParam];
-      if (GL.currProgram) { // Note the order here; this one is last, and optional
-        if (!cacheItem[GL.currProgram]) cacheItem[GL.currProgram] = {};
-        cacheItem = cacheItem[GL.currProgram];
+      temp = cacheItem[fogParam];
+      cacheItem = temp ? temp : (cacheItem[fogParam] = GL.immediate.rendererCacheItemTemplate.slice());
+      if (GL.currProgram) { // Note the order here; this one is last, and optional. Note that we cannot ensure it is dense, sadly
+        temp = cacheItem[GL.currProgram];
+        cacheItem = temp ? temp : (cacheItem[GL.currProgram] = GL.immediate.rendererCacheItemTemplate.slice());
       }
       if (!cacheItem.renderer) {
 #if GL_DEBUG
@@ -1827,17 +1847,6 @@ var LibraryGL = {
         this.matrixStack['t' + i] = [];
       }
 
-      this.ATTRIBUTE_BY_NAME['V'] = 0;
-      this.ATTRIBUTE_BY_NAME['N'] = 1;
-      this.ATTRIBUTE_BY_NAME['C'] = 2;
-      this.ATTRIBUTE_BY_NAME['T0'] = 3;
-      this.ATTRIBUTE_BY_NAME['T1'] = 4;
-      this.ATTRIBUTE_BY_NAME['T2'] = 5;
-      this.ATTRIBUTE_BY_NAME['T3'] = 6;
-      this.ATTRIBUTE_BY_NAME['T4'] = 7;
-      this.ATTRIBUTE_BY_NAME['T5'] = 8;
-      this.ATTRIBUTE_BY_NAME['T6'] = 9;
-
       // Initialize matrix library
 
       GL.immediate.matrix['m'] = GL.immediate.matrix.lib.mat4.create();
@@ -1847,6 +1856,9 @@ var LibraryGL = {
       for (var i = 0; i < GL.immediate.MAX_TEXTURES; i++) {
         GL.immediate.matrix['t' + i] = GL.immediate.matrix.lib.mat4.create();
       }
+
+      // Renderer cache
+      this.rendererCache = this.rendererCacheItemTemplate.slice();
 
       // Buffers for data
       this.tempData = new Float32Array(this.MAX_TEMP_BUFFER_SIZE >> 2);
@@ -1936,7 +1948,7 @@ var LibraryGL = {
           assert((attribute.offset - bytes)%4 == 0); // XXX assuming 4-alignment
           bytes += attribute.offset - bytes;
         }
-        bytes += attribute.size * GL.immediate.byteSizeByType[attribute.type];
+        bytes += attribute.size * GL.immediate.byteSizeByType[attribute.type - GL.immediate.byteSizeByTypeRoot];
         if (bytes % 4 != 0) bytes += 4 - (bytes % 4); // XXX assuming 4-alignment
       }
       assert(stride == 0 || bytes <= stride);
@@ -2024,13 +2036,16 @@ var LibraryGL = {
   glBegin: function(mode) {
     GL.immediate.mode = mode;
     GL.immediate.vertexCounter = 0;
-    GL.immediate.rendererComponents = {}; // XXX
+    var components = GL.immediate.rendererComponents = [];
+    for (var i = 0; i < GL.immediate.NUM_ATTRIBUTES; i++) {
+      components[i] = 0;
+    }
     GL.immediate.rendererComponentPointer = 0;
     GL.immediate.vertexData = GL.immediate.tempData;
   },
 
   glEnd: function() {
-    GL.immediate.prepareClientAttributes(GL.immediate.rendererComponents['V'], true);
+    GL.immediate.prepareClientAttributes(GL.immediate.rendererComponents[GL.immediate.VERTEX], true);
     GL.immediate.firstVertex = 0;
     GL.immediate.lastVertex = GL.immediate.vertexCounter / (GL.immediate.stride >> 2);
     GL.immediate.flush();
@@ -2048,7 +2063,7 @@ var LibraryGL = {
 #if ASSERTIONS
     assert(GL.immediate.vertexCounter << 2 < GL.immediate.MAX_TEMP_BUFFER_SIZE);
 #endif
-    GL.immediate.addRendererComponent('V', 3, Module.ctx.FLOAT);
+    GL.immediate.addRendererComponent(GL.immediate.VERTEX, 3, Module.ctx.FLOAT);
   },
   glVertex2f: 'glVertex3f',
 
@@ -2063,7 +2078,7 @@ var LibraryGL = {
 #endif
     GL.immediate.vertexData[GL.immediate.vertexCounter++] = u;
     GL.immediate.vertexData[GL.immediate.vertexCounter++] = v;
-    GL.immediate.addRendererComponent('T0', 2, Module.ctx.FLOAT);
+    GL.immediate.addRendererComponent(GL.immediate.TEXTURE0, 2, Module.ctx.FLOAT);
   },
   glTexCoord2f: 'glTexCoord2i',
 
@@ -2081,7 +2096,7 @@ var LibraryGL = {
       GL.immediate.vertexDataU8[start + 2] = b * 255;
       GL.immediate.vertexDataU8[start + 3] = a * 255;
       GL.immediate.vertexCounter++;
-      GL.immediate.addRendererComponent('C', 4, Module.ctx.UNSIGNED_BYTE);
+      GL.immediate.addRendererComponent(GL.immediate.COLOR, 4, Module.ctx.UNSIGNED_BYTE);
     } else {
       GL.immediate.clientColor[0] = r;
       GL.immediate.clientColor[1] = g;
@@ -2237,16 +2252,16 @@ var LibraryGL = {
 
   glVertexPointer__deps: ['$GLEmulation'], // if any pointers are used, glVertexPointer must be, and if it is, then we need emulation
   glVertexPointer: function(size, type, stride, pointer) {
-    GL.immediate.setClientAttribute('V', size, type, stride, pointer);
+    GL.immediate.setClientAttribute(GL.immediate.VERTEX, size, type, stride, pointer);
   },
   glTexCoordPointer: function(size, type, stride, pointer) {
-    GL.immediate.setClientAttribute('T' + GL.immediate.clientActiveTexture, size, type, stride, pointer);
+    GL.immediate.setClientAttribute(GL.immediate.TEXTURE0 + GL.immediate.clientActiveTexture, size, type, stride, pointer);
   },
   glNormalPointer: function(type, stride, pointer) {
-    GL.immediate.setClientAttribute('N', 3, type, stride, pointer);
+    GL.immediate.setClientAttribute(GL.immediate.NORMAL, 3, type, stride, pointer);
   },
   glColorPointer: function(size, type, stride, pointer) {
-    GL.immediate.setClientAttribute('C', size, type, stride, pointer);
+    GL.immediate.setClientAttribute(GL.immediate.COLOR, size, type, stride, pointer);
   },
 
   glClientActiveTexture: function(texture) {

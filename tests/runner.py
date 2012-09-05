@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# This Python file uses the following encoding: utf-8
 
 '''
 Simple test runner
@@ -14,7 +15,7 @@ will use 4 processes. To install nose do something like
 '''
 
 from subprocess import Popen, PIPE, STDOUT
-import os, unittest, tempfile, shutil, time, inspect, sys, math, glob, tempfile, re, difflib, webbrowser, hashlib, threading, platform, BaseHTTPServer, multiprocessing, functools
+import os, unittest, tempfile, shutil, time, inspect, sys, math, glob, tempfile, re, difflib, webbrowser, hashlib, threading, platform, BaseHTTPServer, multiprocessing, functools, stat
 
 
 if len(sys.argv) == 1:
@@ -296,7 +297,7 @@ process(sys.argv[1])
       os.makedirs(ret)
     return ret
 
-  def get_library(self, name, generated_libs, configure=['sh', './configure'], configure_args=[], make=['make'], make_args=['-j', '2'], cache=True):
+  def get_library(self, name, generated_libs, configure=['sh', './configure'], configure_args=[], make=['make'], make_args=['-j', '2'], cache=True, env_init={}):
     build_dir = self.get_build_dir()
     output_dir = self.get_dir()
 
@@ -316,7 +317,7 @@ process(sys.argv[1])
     print >> sys.stderr, '<building and saving into cache> ',
 
     return Building.build_library(name, build_dir, output_dir, generated_libs, configure, configure_args, make, make_args, self.library_cache, cache_name,
-                                  copy_project=True)
+                                  copy_project=True, env_init=env_init)
 
   def clear(self):
     for name in os.listdir(self.get_dir()):
@@ -952,6 +953,39 @@ m_divisor is 1091269979
       '''
       self.do_run(src, 'zero 2, 104', ['hallo'])
 
+    def test_i64_i16(self):
+      if Settings.USE_TYPED_ARRAYS != 2: return self.skip('full i64 stuff only in ta2')
+
+      src = r'''
+        #include <stdio.h>
+        int main(int argc, char ** argv){
+            int y=-133;
+            __int64_t x= ((__int64_t)((short)(y)))*(100 + argc);
+            if(x>0)
+                printf(">0\n");
+            else
+                printf("<=0\n");
+        }
+      '''
+      self.do_run(src, '<=0')
+
+    def test_i32_mul_precise(self):
+      if self.emcc_args == None: return self.skip('needs ta2')
+
+      self.emcc_args += ['-s', 'PRECISE_I32_MUL=1']
+      src = r'''
+        #include <stdio.h>
+
+        int main(int argc, char **argv) {
+          unsigned long d1 = 0x847c9b5d;
+          unsigned long q =  0x549530e1;
+          if (argc > 1000) { q += argc; d1 -= argc; } // confuse optimizer
+          printf("%lu\n", d1*q);
+          return 0;
+        }
+      '''
+      self.do_run(src, '3217489085')
+
     def test_i16_emcc_intrinsic(self):
       Settings.CORRECT_SIGNS = 1 # Relevant to this test
 
@@ -976,6 +1010,36 @@ m_divisor is 1091269979
         }
       '''
       self.do_run(src, ',0,,2,C!,0,C!,0,,65535,C!,0,')
+
+    def test_bswap(self):
+      if self.emcc_args == None: return self.skip('needs ta2')
+
+      src = r'''
+        #include <stdio.h>
+
+        extern "C" {
+          extern unsigned short llvm_bswap_i16(unsigned short x);
+          extern unsigned int llvm_bswap_i32(unsigned int x);
+        }
+
+        int main(void) {
+            unsigned short x = 0xc8ef;
+            printf("%x,%x\n", x&0xff, x >> 8);
+            x = llvm_bswap_i16(x);
+            printf("%x,%x\n", x&0xff, x >> 8);
+
+            unsigned int y = 0xc5de158a;
+            printf("%x,%x,%x,%x\n", y&0xff, (y>>8)&0xff, (y>>16)&0xff, (y>>24)&0xff);
+            y = llvm_bswap_i32(y);
+            printf("%x,%x,%x,%x\n", y&0xff, (y>>8)&0xff, (y>>16)&0xff, (y>>24)&0xff);
+            return 0;
+        }
+      '''
+      self.do_run(src, '''ef,c8
+c8,ef
+8a,15,de,c5
+c5,de,15,8a
+''')
 
     def test_sha1(self):
       if self.emcc_args == None: return self.skip('needs ta2')
@@ -1012,8 +1076,15 @@ m_divisor is 1091269979
           };
 
           int main() {
-            // the 64-bit value here will not always be 8-byte aligned
-            S s[3] = { {0x12a751f430142, 22}, {0x17a5c85bad144, 98}, {1, 1}};
+            // the 64-bit value here will not be 8-byte aligned
+            S s0[3] = { {0x12a751f430142, 22}, {0x17a5c85bad144, 98}, {1, 1}};
+            char buffer[10*sizeof(S)];
+            int b = int(buffer);
+            S *s = (S*)(b + 4-b%8);
+            s[0] = s0[0];
+            s[1] = s0[1];
+            s[2] = s0[2];
+
             printf("*%d : %d : %d\n", sizeof(S), ((unsigned int)&s[0]) % 8 != ((unsigned int)&s[1]) % 8,
                                                  ((unsigned int)&s[1]) - ((unsigned int)&s[0]));
             s[0].x++;
@@ -1448,6 +1519,26 @@ m_divisor is 1091269979
           }
         '''
         self.do_run(src, '4:10,177,543,def\n4\nwowie\ntoo\n76\n5\n(null)\n/* a comment */\n// another\ntest\n', ['wowie', 'too', '74'])
+
+    def test_strcmp_uni(self):
+      src = '''
+        #include <stdio.h>
+        #include <string.h>
+        int main()
+        {
+          #define TEST(func) \
+          { \
+            char *word = "WORD"; \
+            char *wordEntry = "Â"; \
+            int cmp = func(word, wordEntry, 2); \
+            printf("Compare value " #func " is %d\\n", cmp); \
+          }
+          TEST(strncmp);
+          TEST(strncasecmp);
+          TEST(memcmp);
+        }
+      '''
+      self.do_run(src, 'Compare value strncmp is -1\nCompare value strncasecmp is -1\nCompare value memcmp is -1\n')
 
     def test_strndup(self):
         src = '''
@@ -2229,6 +2320,25 @@ m_divisor is 1091269979
       '''
       Settings.TOTAL_STACK = 1024
       self.do_run(src, 'ok!')
+
+    def test_stack_void(self):
+      src = r'''
+        #include <stdio.h>
+
+        static char s[100]="aaaaa";
+        static int func(void) {
+          if(s[0]!='a') return 0; 
+          printf("iso open %s\n", s, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001, 1.001);
+          return 0;
+        }
+        int main(){
+          int i;
+          for(i=0;i<5000;i++)
+            func();
+          printf(".ok.\n");
+        }
+      '''
+      self.do_run(src, '.ok.\n')
 
     def test_array2(self):
         src = '''
@@ -3687,6 +3797,8 @@ def process(filename):
                   post_build=add_pre_run_and_checks)
 
     def test_rand(self):
+      return self.skip('rand() is now random') # FIXME
+
       src = r'''
         #include <stdio.h>
         #include <stdlib.h>
@@ -3857,6 +3969,22 @@ at function.:blag
       src = open(path_from_root('tests', 'parseInt', 'src.c'), 'r').read()
       expected = open(path_from_root('tests', 'parseInt', 'output.txt'), 'r').read()
       self.do_run(src, expected)
+      
+    def test_transtrcase(self):
+      src = '''
+        #include <stdio.h>
+        #include <string.h>
+        int main()  {
+          char szToupr[] = "hello, ";
+          char szTolwr[] = "EMSCRIPTEN";
+          strupr(szToupr);
+          strlwr(szTolwr);
+          printf(szToupr);
+          printf(szTolwr);
+          return 0;
+        }
+        '''
+      self.do_run(src, 'HELLO, emscripten')
 
     def test_printf(self):
       if Settings.USE_TYPED_ARRAYS != 2: return self.skip('i64 mode 1 requires ta2')
@@ -3910,7 +4038,9 @@ at function.:blag
         '''
       self.do_run(src, re.sub('(^|\n)\s+', '\\1', expected))
 
-    def test_atoi(self):
+    def test_atoX(self):
+      if self.emcc_args is None: return self.skip('requires ta2')
+
       src = r'''
         #include <stdio.h>
         #include <stdlib.h>
@@ -3927,10 +4057,95 @@ at function.:blag
           printf("%d*", atoi(" 3 7"));
           printf("%d*", atoi("9 d"));
           printf("%d\n", atoi(" 8 e"));
+          printf("%d*", atol(""));
+          printf("%d*", atol("a"));
+          printf("%d*", atol(" b"));
+          printf("%d*", atol(" c "));
+          printf("%d*", atol("6"));
+          printf("%d*", atol(" 5"));
+          printf("%d*", atol("4 "));
+          printf("%d*", atol("3 6"));
+          printf("%d*", atol(" 3 7"));
+          printf("%d*", atol("9 d"));
+          printf("%d\n", atol(" 8 e"));
+          printf("%lld*", atoll("6294967296"));
+          printf("%lld*", atoll(""));
+          printf("%lld*", atoll("a"));
+          printf("%lld*", atoll(" b"));
+          printf("%lld*", atoll(" c "));
+          printf("%lld*", atoll("6"));
+          printf("%lld*", atoll(" 5"));
+          printf("%lld*", atoll("4 "));
+          printf("%lld*", atoll("3 6"));
+          printf("%lld*", atoll(" 3 7"));
+          printf("%lld*", atoll("9 d"));
+          printf("%lld\n", atoll(" 8 e"));
           return 0;
         }
         '''
-      self.do_run(src, '0*0*0*0*6*5*4*3*3*9*8')
+      self.do_run(src, '0*0*0*0*6*5*4*3*3*9*8\n0*0*0*0*6*5*4*3*3*9*8\n6294967296*0*0*0*0*6*5*4*3*3*9*8\n')
+
+    def test_strstr(self):
+      src = r'''
+        #include <stdio.h>
+        #include <string.h>
+
+        int main()
+        {
+          printf("%d\n", !!strstr("\\n", "\\n"));
+          printf("%d\n", !!strstr("cheezy", "ez"));
+          printf("%d\n", !!strstr("cheeezy", "ez"));
+          printf("%d\n", !!strstr("cheeeeeeeeeezy", "ez"));
+          printf("%d\n", !!strstr("cheeeeeeeeee1zy", "ez"));
+          printf("%d\n", !!strstr("che1ezy", "ez"));
+          printf("%d\n", !!strstr("che1ezy", "che"));
+          printf("%d\n", !!strstr("ce1ezy", "che"));
+          printf("%d\n", !!strstr("ce1ezy", "ezy"));
+          printf("%d\n", !!strstr("ce1ezyt", "ezy"));
+          printf("%d\n", !!strstr("ce1ez1y", "ezy"));
+          printf("%d\n", !!strstr("cheezy", "a"));
+          printf("%d\n", !!strstr("cheezy", "b"));
+          printf("%d\n", !!strstr("cheezy", "c"));
+          printf("%d\n", !!strstr("cheezy", "d"));
+          printf("%d\n", !!strstr("cheezy", "g"));
+          printf("%d\n", !!strstr("cheezy", "h"));
+          printf("%d\n", !!strstr("cheezy", "i"));
+          printf("%d\n", !!strstr("cheezy", "e"));
+          printf("%d\n", !!strstr("cheezy", "x"));
+          printf("%d\n", !!strstr("cheezy", "y"));
+          printf("%d\n", !!strstr("cheezy", "z"));
+          printf("%d\n", !!strstr("cheezy", "_"));
+
+          const char *str = "a big string";
+          printf("%d\n", strstr(str, "big") - str);
+          return 0;
+        }
+      '''
+      self.do_run(src, '''1
+1
+1
+1
+0
+1
+1
+0
+1
+1
+0
+0
+0
+1
+0
+0
+1
+0
+1
+0
+1
+1
+0
+2
+''')
 
     def test_sscanf(self):
       src = r'''
@@ -3952,6 +4167,10 @@ at function.:blag
           CHECK("en 3");
 
           printf("%f, %f\n", atof("1.234567"), atof("cheez"));
+
+          float n = -1;
+          sscanf(" 2.8208", "%f", &n);
+          printf("%.4f\n", n);
 
           float a = -1;
           sscanf("-3.03", "%f", &a);
@@ -3982,7 +4201,7 @@ at function.:blag
           return 0;
         }
         '''
-      self.do_run(src, 'en-us : 2\nen-r : 99\nen : 3\n1.234567, 0.000000\n-3.0300\n|some|\n|something|\n|somethingmoar|\n' +
+      self.do_run(src, 'en-us : 2\nen-r : 99\nen : 3\n1.234567, 0.000000\n2.8208\n-3.0300\n|some|\n|something|\n|somethingmoar|\n' +
                        '1\n1499\n' +
                        '5\n87,0.481565,0.059481,0,1\n' +
                        '3\n-123,4294966531,-34\n')
@@ -4461,6 +4680,22 @@ def process(filename):
         second changed: false
       '''
       self.do_run(src, re.sub('(^|\n)\s+', '\\1', expected), post_build=add_pre_run_and_checks)
+
+    def test_utf(self):
+      self.banned_js_engines = [SPIDERMONKEY_ENGINE] # only node handles utf well
+      src = r'''
+        #include <stdio.h>
+        #include <emscripten.h>
+
+        int main() {
+          char *c = "μ†ℱ ╋ℯ╳╋";
+          printf("%d %d %d %d %s\n", c[0]&0xff, c[1]&0xff, c[2]&0xff, c[3]&0xff, c);
+          emscripten_run_script("cheez = Module._malloc(100);"
+                                "Module.writeStringToMemory(\"μ†ℱ ╋ℯ╳╋\", cheez);"
+                                "Module.print([Pointer_stringify(cheez), Module.getValue(cheez, 'i8')&0xff, Module.getValue(cheez+1, 'i8')&0xff, Module.getValue(cheez+2, 'i8')&0xff, Module.getValue(cheez+3, 'i8')&0xff, ]);");
+        }
+      '''
+      self.do_run(src, '206 188 226 128 μ†ℱ ╋ℯ╳╋\nμ†ℱ ╋ℯ╳╋,206,188,226,128\n');
 
     def test_direct_string_constant_usage(self):
       if self.emcc_args is None: return self.skip('requires libcxx')
@@ -5014,6 +5249,19 @@ int main(int argc, char **argv) {
         }
       '''
       self.do_run(src, 'value:10')
+
+    def test_fakestat(self):
+      src = r'''
+        #include <stdio.h>
+        struct stat { int x, y; };
+        int main() {
+          stat s;
+          s.x = 10;
+          s.y = 22;
+          printf("*%d,%d*\n", s.x, s.y);
+        }
+      '''
+      self.do_run(src, '*10,22*')
       
     def test_mmap(self):
       src = '''
@@ -5258,6 +5506,7 @@ def process(filename):
                                  [os.path.join('utils', 'pdftoppm.o'),
                                   os.path.join('utils', 'parseargs.o'),
                                   os.path.join('poppler', '.libs', 'libpoppler.a')],
+                                 env_init={ 'FONTCONFIG_CFLAGS': ' ', 'FONTCONFIG_LIBS': ' ' },
                                  configure_args=['--disable-libjpeg', '--disable-libpng', '--disable-poppler-qt', '--disable-poppler-qt4', '--disable-cms', '--disable-cairo-output', '--disable-abiword-output', '--enable-shared=no'])
 
       # Combine libraries
@@ -5289,7 +5538,7 @@ def process(filename):
     ))
   ).replace(
     '// {{POST_RUN_ADDITIONS}}',
-    "Module.print('Data: ' + JSON.stringify(FS.root.contents['image.raw'].contents));"
+    "Module.print('Data: ' + JSON.stringify(FS.analyzePath('image.raw').object.contents));"
   )
   open(filename, 'w').write(src)
 '''
@@ -6798,6 +7047,19 @@ f.close()
       self.assertContained('hello from lib', run_js(os.path.join(self.get_dir(), 'a.out.js')))
       assert not os.path.exists('a.out') and not os.path.exists('a.exe'), 'Must not leave unneeded linker stubs'
 
+    def test_abspaths(self):
+      # Includes with absolute paths are generally dangerous, things like -I/usr/.. will get to system local headers, not our portable ones.
+
+      shutil.copyfile(path_from_root('tests', 'hello_world.c'), 'main.c')
+
+      for args, expected in [(['-I/usr/something'], True),
+                             (['-L/usr/something'], True),
+                             (['-Isubdir/something'], False),
+                             (['-Lsubdir/something'], False),
+                             ([], False)]:
+        err = Popen(['python', EMCC, 'main.c'] + args, stderr=PIPE).communicate()[1]
+        assert ('emcc: warning: -I or -L of an absolute path encountered. If this is to a local system header/library, it may cause problems (local system files make sense for compiling natively on your system, but not necessarily to JavaScript)' in err) == expected, err
+
     def test_local_link(self):
       # Linking a local library directly, like /usr/lib/libsomething.so, cannot work of course since it
       # doesn't contain bitcode. However, when we see that we should look for a bitcode file for that
@@ -6915,6 +7177,34 @@ f.close()
       # with it, we succeed
       err = Popen(['python', EMCC, os.path.join(self.get_dir(), 'main.cpp'), os.path.join(self.get_dir(), 'side.cpp'), '--remove-duplicates'], stderr=PIPE).communicate()[1]
       self.assertContained('bye bye', run_js(os.path.join(self.get_dir(), 'a.out.js')))
+
+    def test_main_a(self):
+      # if main() is in a .a, we need to pull in that .a
+
+      main_name = os.path.join(self.get_dir(), 'main.c')
+      open(main_name, 'w').write(r'''
+        #include <stdio.h>
+        extern int f();
+        int main() {
+          printf("result: %d.\n", f());
+          return 0;
+        }
+      ''')
+
+      other_name = os.path.join(self.get_dir(), 'other.c')
+      open(other_name, 'w').write(r'''
+        #include <stdio.h>
+        int f() { return 12346; }
+      ''')
+
+      Popen(['python', EMCC, main_name, '-c', '-o', main_name+'.bc']).communicate()
+      Popen(['python', EMCC, other_name, '-c', '-o', other_name+'.bc']).communicate()
+
+      Popen(['python', EMAR, 'cr', main_name+'.a', main_name+'.bc']).communicate()
+
+      Popen(['python', EMCC, other_name+'.bc', main_name+'.a']).communicate()
+
+      self.assertContained('result: 12346.', run_js(os.path.join(self.get_dir(), 'a.out.js')))
 
     def test_embed_file(self):
       open(os.path.join(self.get_dir(), 'somefile.txt'), 'w').write('''hello from a file with lots of data and stuff in it thank you very much''')
@@ -7080,6 +7370,17 @@ f.close()
           src = open(os.path.join(self.get_dir(), 'a.out.js')).read() + '\n_main();\n';
           open(os.path.join(self.get_dir(), 'a.out.js'), 'w').write(src)
           assert 'hello from main' in run_js(os.path.join(self.get_dir(), 'a.out.js')), 'main should print when called manually'
+
+      # Use postInit
+      open(os.path.join(self.get_dir(), 'pre.js'), 'w').write('''
+        var Module = {
+          preRun: function() { Module.print('pre-run') },
+          postRun: function() { Module.print('post-run') },
+          preInit: function() { Module.print('pre-init') }
+        };
+      ''')
+      Popen(['python', EMCC, os.path.join(self.get_dir(), 'main.cpp'), '--pre-js', 'pre.js']).communicate()
+      self.assertContained('pre-init\npre-run\nhello from main\npost-run\n', run_js(os.path.join(self.get_dir(), 'a.out.js')))
 
     def test_prepost2(self):
       open(os.path.join(self.get_dir(), 'main.cpp'), 'w').write('''
@@ -7484,6 +7785,16 @@ elif 'browser' in str(sys.argv):
       Popen(['python', EMCC, os.path.join(self.get_dir(), 'main.cpp'), '--preload-file', os.path.join(self.get_dir(), 'somefile.txt'), '-o', 'page.html']).communicate()
       self.run_browser('page.html', 'You should see |load me right before|.', '/report_result?1')
 
+      # Should still work with -o subdir/..
+
+      make_main(os.path.join(self.get_dir(), 'somefile.txt'))
+      try:
+        os.mkdir(os.path.join(self.get_dir(), 'dirrey'))
+      except:
+        pass
+      Popen(['python', EMCC, os.path.join(self.get_dir(), 'main.cpp'), '--preload-file', os.path.join(self.get_dir(), 'somefile.txt'), '-o', 'dirrey/page.html']).communicate()
+      self.run_browser('dirrey/page.html', 'You should see |load me right before|.', '/report_result?1')
+
       # With FS.preloadFile
 
       open(os.path.join(self.get_dir(), 'pre.js'), 'w').write('''
@@ -7622,12 +7933,12 @@ elif 'browser' in str(sys.argv):
           event.initKeyEvent("keydown", true, true, window,
                              0, 0, 0, 0,
                              c, c);
-          dispatchEvent(event);
+          document.dispatchEvent(event);
           var event2 = document.createEvent("KeyboardEvent");
           event2.initKeyEvent("keyup", true, true, window,
                              0, 0, 0, 0,
                              c, c);
-          dispatchEvent(event2);
+          document.dispatchEvent(event2);
         }
       ''')
       open(os.path.join(self.get_dir(), 'sdl_key.c'), 'w').write(self.with_report_result(open(path_from_root('tests', 'sdl_key.c')).read()))
@@ -7671,10 +7982,11 @@ elif 'browser' in str(sys.argv):
     def test_sdl_audio(self):
       shutil.copyfile(path_from_root('tests', 'sounds', 'alarmvictory_1.ogg'), os.path.join(self.get_dir(), 'sound.ogg'))
       shutil.copyfile(path_from_root('tests', 'sounds', 'alarmcreatemiltaryfoot_1.wav'), os.path.join(self.get_dir(), 'sound2.wav'))
+      open(os.path.join(self.get_dir(), 'bad.ogg'), 'w').write('I claim to be audio, but am lying')
       open(os.path.join(self.get_dir(), 'sdl_audio.c'), 'w').write(self.with_report_result(open(path_from_root('tests', 'sdl_audio.c')).read()))
 
       # use closure to check for a possible bug with closure minifying away newer Audio() attributes
-      Popen(['python', EMCC, '-O2', '--minify', '0', os.path.join(self.get_dir(), 'sdl_audio.c'), '--preload-file', 'sound.ogg', '--preload-file', 'sound2.wav', '-o', 'page.html', '-s', 'EXPORTED_FUNCTIONS=["_main", "_play", "_play2"]']).communicate()
+      Popen(['python', EMCC, '-O2', '--minify', '0', os.path.join(self.get_dir(), 'sdl_audio.c'), '--preload-file', 'sound.ogg', '--preload-file', 'sound2.wav', '--preload-file', 'bad.ogg', '-o', 'page.html', '-s', 'EXPORTED_FUNCTIONS=["_main", "_play", "_play2"]']).communicate()
       self.run_browser('page.html', '', '/report_result?1')
 
     def test_sdl_audio_quickload(self):
@@ -7833,7 +8145,7 @@ elif 'browser' in str(sys.argv):
         expected = [str(i) for i in range(0, reference_slack+1)]
         shutil.copyfile(path_from_root('tests', filename), os.path.join(self.get_dir(), filename))
         self.reftest(path_from_root('tests', reference))
-        args += ['--pre-js', 'reftest.js']
+        args = args + ['--pre-js', 'reftest.js']
       Popen(['python', EMCC, os.path.join(self.get_dir(), filename), '-o', 'test.html'] + args).communicate()
       if type(expected) is str: expected = [expected]
       self.run_browser('test.html', '.', ['/report_result?' + e for e in expected])
@@ -7842,6 +8154,7 @@ elif 'browser' in str(sys.argv):
       self.btest('emscripten_api_browser.cpp', '1')
 
     def test_emscripten_fs_api(self):
+      shutil.copyfile(path_from_root('tests', 'screenshot.png'), os.path.join(self.get_dir(), 'screenshot.png')) # preloaded *after* run
       self.btest('emscripten_fs_api_browser.cpp', '1')
 
     def test_gc(self):
@@ -7911,6 +8224,9 @@ elif 'browser' in str(sys.argv):
 
     def test_sdl_canvas_palette(self):
       self.btest('sdl_canvas_palette.c', reference='sdl_canvas_palette.png')
+
+    def test_sdl_maprgba(self):
+      self.btest('sdl_maprgba.c', reference='sdl_maprgba.png', reference_slack=3)
 
     def zzztest_sdl_canvas_palette_2(self): # XXX disabled until we have proper automation
       open(os.path.join(self.get_dir(), 'sdl_canvas_palette_2.c'), 'w').write(self.with_report_result(open(path_from_root('tests', 'sdl_canvas_palette_2.c')).read()))
@@ -8053,6 +8369,7 @@ elif 'benchmark' in str(sys.argv):
 
       try_delete(final_filename)
       output = Popen(['python', EMCC, filename, '-O3',
+                      #'-O2', '-s', 'INLINING_LIMIT=0', '-s', 'DOUBLE_MODE=0', '-s', 'PRECISE_I64_MATH=0',
                       '-s', 'TOTAL_MEMORY=100*1024*1024', '-s', 'FAST_MEMORY=10*1024*1024',
                       '-o', final_filename] + emcc_args, stdout=PIPE, stderr=self.stderr_redirect).communicate()
       assert os.path.exists(final_filename), 'Failed to compile file: ' + output[0]
@@ -8383,6 +8700,44 @@ elif 'sanity' in str(sys.argv):
       try_delete('a.out.js')
       output = self.check_working([EMCC, '-O2', 'tests/hello_world.cpp'], '')
       assert os.path.exists('a.out.js')
+
+    def test_llvm(self):
+      LLVM_WARNING = 'warning: LLVM version appears incorrect'
+
+      restore()
+
+      # Clang should report the version number we expect, and emcc should not warn
+      assert ('clang version ' + '.'.join(map(str, EXPECTED_LLVM_VERSION))) in Popen([CLANG, '-v'], stderr=PIPE).communicate()[1]
+      output = self.check_working(EMCC)
+      assert LLVM_WARNING not in output, output
+
+      # Fake a different llvm version
+      restore()
+      f = open(CONFIG_FILE, 'a')
+      f.write('LLVM_ROOT = "' + path_from_root('tests', 'fake') + '"')
+      f.close()
+
+      if not os.path.exists(path_from_root('tests', 'fake')):
+        os.makedirs(path_from_root('tests', 'fake'))
+
+      try:
+        os.environ['EM_IGNORE_SANITY'] = '1'
+        for x in range(-2, 3):
+          for y in range(-2, 3):
+            f = open(path_from_root('tests', 'fake', 'clang'), 'w')
+            f.write('#!/bin/sh\n')
+            f.write('echo "clang version %d.%d" 1>&2\n' % (EXPECTED_LLVM_VERSION[0] + x, EXPECTED_LLVM_VERSION[1] + y))
+            f.close()
+            shutil.copyfile(path_from_root('tests', 'fake', 'clang'), path_from_root('tests', 'fake', 'clang++'))
+            os.chmod(path_from_root('tests', 'fake', 'clang'), stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+            os.chmod(path_from_root('tests', 'fake', 'clang++'), stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+            if x != 0 or y != 0:
+              output = self.check_working(EMCC, LLVM_WARNING)
+            else:
+              output = self.check_working(EMCC)
+              assert LLVM_WARNING not in output, output
+      finally:
+        del os.environ['EM_IGNORE_SANITY']
 
     def test_emcc(self):
       SANITY_MESSAGE = 'Emscripten: Running sanity checks'

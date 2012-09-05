@@ -7,7 +7,7 @@ emcc - compiler helper script
 emcc is a drop-in replacement for a compiler like gcc or clang.
 
 Tell your build system to use this instead of the compiler, and similarly
-use emar, emld and emranlib instead of the same command without 'em'.
+use emar, emranlib etc. instead of the same command without 'em'.
 
 Example uses:
 
@@ -32,10 +32,10 @@ Example uses:
 
     SET(CMAKE_C_COMPILER "PATH/emcc")
     SET(CMAKE_CXX_COMPILER "PATH/em++")
-    SET(CMAKE_LINKER "PATH/emld")
-    SET(CMAKE_CXX_LINKER "PATH/emld")
-    SET(CMAKE_C_LINK_EXECUTABLE "PATH/emld")
-    SET(CMAKE_CXX_LINK_EXECUTABLE "PATH/emld")
+    SET(CMAKE_LINKER "PATH/emcc")
+    SET(CMAKE_CXX_LINKER "PATH/emcc")
+    SET(CMAKE_C_LINK_EXECUTABLE "PATH/emcc")
+    SET(CMAKE_CXX_LINK_EXECUTABLE "PATH/emcc")
     SET(CMAKE_AR "PATH/emar")
     SET(CMAKE_RANLIB "PATH/emranlib")
 
@@ -141,6 +141,9 @@ Options that are modified or new in %s include:
                            or C++ exception catching (to re-enable
                            C++ exception catching, use
                            -s DISABLE_EXCEPTION_CATCHING=0 ).
+                           (For details on the affects of different
+                           opt levels, see apply_opt_level() in
+                           tools/shared.py and also src/settings.js.)
                            Note: Optimizations are only done when
                            compiling to JavaScript, not to intermediate
                            bitcode.
@@ -203,8 +206,12 @@ Options that are modified or new in %s include:
   --embed-file <file>      A file to embed inside the generated
                            JavaScript. The compiled code will be able
                            to access the file in the current directory
-                           with the same basename as given here (that is,
-                           just the filename, without a path to it).
+                           with the same name as given here. So if
+                           you do --embed-file dir/file.dat, then
+                           (1) dir/file.dat must exist relative to
+                           where you run emcc, and (2) your compiled
+                           code will be able to find the file by
+                           reading that same path, dir/file.dat.
                            If a directory is passed here, its entire
                            contents will be embedded.
 
@@ -512,6 +519,8 @@ try:
     elif newargs[i] == '--remove-duplicates':
       remove_duplicates = True
       newargs[i] = ''
+    elif newargs[i].startswith(('-I/', '-L/')):
+      print >> sys.stderr, 'emcc: warning: -I or -L of an absolute path encountered. If this is to a local system header/library, it may cause problems (local system files make sense for compiling natively on your system, but not necessarily to JavaScript)' # Of course an absolute path to a non-system-specific library or header is fine, and you can ignore this warning. The danger are system headers that are e.g. x86 specific and nonportable. The emscripten bundled headers are modified to be portable, local system ones are generally not
   newargs = [ arg for arg in newargs if arg is not '' ]
 
   if llvm_opts is None: llvm_opts = LLVM_OPT_LEVEL[opt_level]
@@ -542,7 +551,8 @@ try:
 
   input_files = []
   has_source_inputs = False
-  lib_dirs = [shared.path_from_root('system', 'lib')]
+  lib_dirs = [shared.path_from_root('system', 'local', 'lib'),
+              shared.path_from_root('system', 'lib')]
   libs = []
   for i in range(len(newargs)): # find input files XXX this a simple heuristic. we should really analyze based on a full understanding of gcc params,
                                 # right now we just assume that what is left contains no more |-x OPT| things

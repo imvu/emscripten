@@ -1,4 +1,10 @@
-//"use strict";
+
+//
+// Various compiling-to-JS parameters. These are simply variables present when the
+// JS compiler runs. To set them, do something like
+//
+//   emcc -s OPTION1=VALUE1 -s OPTION2=VALUE2 [..other stuff..]
+//
 
 // Tuning
 var QUANTUM_SIZE = 4; // This is the size of an individual field in a structure. 1 would
@@ -70,6 +76,16 @@ var DOUBLE_MODE = 1; // How to load and store 64-bit doubles. Without typed arra
                      // NaN or an infinite number.
 var PRECISE_I64_MATH = 1; // If enabled, i64 addition etc. is emulated - which is slow but precise. If disabled,
                           // we use the 'double trick' which is fast but incurs rounding at high values.
+                          // Note that we do not catch 32-bit multiplication by default (which must be done in
+                          // 64 bits for high values for full precision) - you must manually set PRECISE_I32_MUL
+                          // for that.
+var PRECISE_I32_MUL = 0; // If enabled, i64 math is done in i32 multiplication. This is necessary if the values
+                         // exceed the JS double-integer limit of ~52 bits. This option can normally be disabled
+                         // because generally i32 multiplication works ok without it, and enabling it has a big
+                         // impact on performance.
+                         // Note that you can hand-optimize your code to avoid the need for this: If you do
+                         // multiplications that actually need 64-bit precision inside 64-bit values, things
+                         // will work properly. (Unless the LLVM optimizer turns them into 32-bit values?)
 
 var CLOSURE_ANNOTATIONS = 0; // If set, the generated code will be annotated for the closure
                              // compiler. This potentially lets closure optimize the code better.
@@ -108,6 +124,8 @@ var LIBRARY_DEBUG = 0; // Print out when we enter a library call (library*.js). 
                        //   emscripten_run_script("Runtime.debug = ...;");
 var GL_DEBUG = 0; // Print out all calls into WebGL. As with LIBRARY_DEBUG, you can set a runtime
                   // option, in this case GL.debug.
+
+var PROFILE_MAIN_LOOP = 0; // Profile the function called in set_main_loop
 
 var DISABLE_EXCEPTION_CATCHING = 0; // Disables generating code to actually catch exceptions. If the code you
                                     // are compiling does not actually rely on catching exceptions (but the
@@ -639,7 +657,7 @@ var C_DEFINES = {'SI_MESGQ': '5',
    'SING': '2',
    'M_INVLN2': '1.44269504089',
    'SDL_TIMERS_DISABLED': '1',
-   'M_TWOPI': '3.14159265359',
+   'M_TWOPI': '6.28318530718',
    '_PC_REC_XFER_ALIGN': '19',
    '_NL_TIME_DATE_FMT': '84',
    '_SC_REALTIME_SIGNALS': '29',

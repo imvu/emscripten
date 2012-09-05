@@ -33,6 +33,7 @@ LibraryManager.library = {
                 'Module["FS_createFolder"] = FS.createFolder;' +
                 'Module["FS_createPath"] = FS.createPath;' +
                 'Module["FS_createDataFile"] = FS.createDataFile;' +
+                'Module["FS_createPreloadedFile"] = FS.createPreloadedFile;' +
                 'Module["FS_createLazyFile"] = FS.createLazyFile;' +
                 'Module["FS_createLink"] = FS.createLink;' +
                 'Module["FS_createDevice"] = FS.createDevice;',
@@ -45,12 +46,29 @@ LibraryManager.library = {
     // index is unused, as the indices are used as pointers. This is not split
     // into separate fileStreams and folderStreams lists because the pointers
     // must be interchangeable, e.g. when used in fdopen().
+    // streams is kept as a dense array. It may contain |null| to fill in
+    // holes, however.
     streams: [null],
+#if ASSERTIONS
+    checkStreams: function() {
+      for (var i in FS.streams) assert(i >= 0 && i < FS.streams.length); // no keys not in dense span
+      for (var i = 0; i < FS.streams.length; i++) assert(typeof FS.streams[i] == 'object'); // no non-null holes in dense span
+    },
+#endif
     // Whether we are currently ignoring permissions. Useful when preparing the
     // filesystem and creating files inside read-only folders.
     // This is set to false when the runtime is initialized, allowing you
     // to modify the filesystem freely before run() is called.
     ignorePermissions: true,
+    joinPath: function(parts, forceRelative) {
+      var ret = parts[0];
+      for (var i = 1; i < parts.length; i++) {
+        if (ret[ret.length-1] != '/') ret += '/';
+        ret += parts[i];
+      }
+      if (forceRelative && ret[0] == '/') ret = ret.substr(1);
+      return ret;
+    },
     // Converts any path to an absolute path. Resolves embedded "." and ".."
     // parts.
     absolutePath: function(relative, base) {
@@ -261,7 +279,10 @@ LibraryManager.library = {
         for (var i = 0, len = data.length; i < len; ++i) dataArray[i] = data.charCodeAt(i);
         data = dataArray;
       }
-      var properties = {isDevice: false, contents: data};
+      var properties = {
+        isDevice: false,
+        contents: data.subarray ? data.subarray(0) : data // as an optimization, create a new array wrapper (not buffer) here, to help JS engines understand this object
+      };
       return FS.createFile(parent, name, properties, canRead, canWrite);
     },
     // Creates a file record for lazy-loading from a URL. XXX This requires a synchronous
@@ -273,10 +294,46 @@ LibraryManager.library = {
     },
     // Preloads a file asynchronously. You can call this before run, for example in
     // preRun. run will be delayed until this file arrives and is set up.
-    createPreloadedFile: function(parent, name, url, canRead, canWrite) {
-      Browser.asyncLoad(url, function(data) {
-        FS.createDataFile(parent, name, data, canRead, canWrite);
-      });
+    // If you call it after run(), you may want to pause the main loop until it
+    // completes, if so, you can use the onload parameter to be notified when
+    // that happens.
+    // In addition to normally creating the file, we also asynchronously preload
+    // the browser-friendly versions of it: For an image, we preload an Image
+    // element and for an audio, and Audio. These are necessary for SDL_Image
+    // and _Mixer to find the files in preloadedImages/Audios.
+    // You can also call this with a typed array instead of a url. It will then
+    // do preloading for the Image/Audio part, as if the typed array were the
+    // result of an XHR that you did manually.
+    createPreloadedFile: function(parent, name, url, canRead, canWrite, onload, onerror) {
+      Browser.ensureObjects();
+      var fullname = FS.joinPath([parent, name], true);
+      function processData(byteArray) {
+        function finish(byteArray) {
+          FS.createDataFile(parent, name, byteArray, canRead, canWrite);
+          if (onload) onload();
+          removeRunDependency('cp ' + fullname);
+        }
+        var handled = false;
+        Module['preloadPlugins'].forEach(function(plugin) {
+          if (handled) return;
+          if (plugin['canHandle'](fullname)) {
+            plugin['handle'](byteArray, fullname, finish, function() {
+              if (onerror) onerror();
+              removeRunDependency('cp ' + fullname);
+            });
+            handled = true;
+          }
+        });
+        if (!handled) finish(byteArray);
+      }
+      addRunDependency('cp ' + fullname);
+      if (typeof url == 'string') {
+        Browser.asyncLoad(url, function(byteArray) {
+          processData(byteArray);
+        }, onerror);
+      } else {
+        processData(url);
+      }
     },
     // Creates a link to a sepcific local path.
     createLink: function(parent, name, target, canRead, canWrite) {
@@ -367,12 +424,13 @@ LibraryManager.library = {
           return input.cache.shift();
         };
       }
+      var utf8 = new Runtime.UTF8Processor();
       function simpleOutput(val) {
         if (val === null || val === '\n'.charCodeAt(0)) {
           output.printer(output.buffer.join(''));
           output.buffer = [];
         } else {
-          output.buffer.push(String.fromCharCode(val));
+          output.buffer.push(utf8.processCChar(val));
         }
       }
       if (!output) {
@@ -437,17 +495,25 @@ LibraryManager.library = {
         eof: false,
         ungotten: []
       };
-      _stdin = allocate([1], 'void*', ALLOC_STATIC);
-      _stdout = allocate([2], 'void*', ALLOC_STATIC);
-      _stderr = allocate([3], 'void*', ALLOC_STATIC);
+      // Allocate these on the stack (and never free, we are called from ATINIT or earlier), to keep their locations low
+      _stdin = allocate([1], 'void*', ALLOC_STACK);
+      _stdout = allocate([2], 'void*', ALLOC_STACK);
+      _stderr = allocate([3], 'void*', ALLOC_STACK);
 
       // Other system paths
       FS.createPath('/', 'dev/shm/tmp', true, true); // temp files
 
       // Newlib initialization
+      for (var i = FS.streams.length; i < Math.max(_stdin, _stdout, _stderr) + {{{ QUANTUM_SIZE }}}; i++) {
+        FS.streams[i] = null; // Make sure to keep FS.streams dense
+      }
       FS.streams[_stdin] = FS.streams[1];
       FS.streams[_stdout] = FS.streams[2];
       FS.streams[_stderr] = FS.streams[3];
+#if ASSERTIONS
+      FS.checkStreams();
+      assert(FS.streams.length < 1024); // at this early stage, we should not have a large set of file descriptors - just a few
+#endif
       __impure_ptr = allocate([ allocate(
         {{{ Runtime.QUANTUM_SIZE === 4 ? '[0, 0, 0, 0, _stdin, 0, 0, 0, _stdout, 0, 0, 0, _stderr, 0, 0, 0]' : '[0, _stdin, _stdout, _stderr]' }}},
         'void*', ALLOC_STATIC) ], 'void*', ALLOC_STATIC);
@@ -501,7 +567,7 @@ LibraryManager.library = {
       ___setErrNo(ERRNO_CODES.EACCES);
       return 0;
     }
-    var id = FS.streams.length;
+    var id = FS.streams.length; // Keep dense
     var contents = [];
     for (var key in target.contents) contents.push(key);
     FS.streams[id] = {
@@ -522,6 +588,9 @@ LibraryManager.library = {
       // Each stream has its own area for readdir() returns.
       currentEntry: _malloc(___dirent_struct_layout.__size__)
     };
+#if ASSERTIONS
+    FS.checkStreams();
+#endif
     return id;
   },
   closedir__deps: ['$FS', '__setErrNo', '$ERRNO_CODES'],
@@ -532,7 +601,7 @@ LibraryManager.library = {
       return ___setErrNo(ERRNO_CODES.EBADF);
     } else {
       _free(FS.streams[dirp].currentEntry);
-      delete FS.streams[dirp];
+      FS.streams[dirp] = null;
       return 0;
     }
   },
@@ -1030,7 +1099,7 @@ LibraryManager.library = {
       finalPath = path.parentPath + '/' + path.name;
     }
     // Actually create an open stream.
-    var id = FS.streams.length;
+    var id = FS.streams.length; // Keep dense
     if (target.isFolder) {
       var entryBuffer = 0;
       if (___dirent_struct_layout) {
@@ -1069,6 +1138,9 @@ LibraryManager.library = {
         ungotten: []
       };
     }
+#if ASSERTIONS
+    FS.checkStreams();
+#endif
     return id;
   },
   creat__deps: ['open'],
@@ -1078,10 +1150,10 @@ LibraryManager.library = {
     return _open(path, {{{ cDefine('O_WRONLY') }}} | {{{ cDefine('O_CREAT') }}} | {{{ cDefine('O_TRUNC') }}}, allocate([mode, 0, 0, 0], 'i32', ALLOC_STACK));
   },
   fcntl__deps: ['$FS', '__setErrNo', '$ERRNO_CODES', '__flock_struct_layout'],
-  fcntl: function(fildes, cmd, varargs) {
+  fcntl: function(fildes, cmd, varargs, dup2) {
     // int fcntl(int fildes, int cmd, ...);
     // http://pubs.opengroup.org/onlinepubs/009695399/functions/fcntl.html
-    if (!(fildes in FS.streams)) {
+    if (!FS.streams[fildes]) {
       ___setErrNo(ERRNO_CODES.EBADF);
       return -1;
     }
@@ -1097,8 +1169,14 @@ LibraryManager.library = {
         for (var member in stream) {
           newStream[member] = stream[member];
         }
-        if (arg in FS.streams) arg = FS.streams.length;
+        arg = dup2 ? arg : Math.max(arg, FS.streams.length); // dup2 wants exactly arg; fcntl wants a free descriptor >= arg
+        for (var i = FS.streams.length; i < arg; i++) {
+          FS.streams[i] = null; // Keep dense
+        }
         FS.streams[arg] = newStream;
+#if ASSERTIONS
+        FS.checkStreams();
+#endif
         return arg;
       case {{{ cDefine('F_GETFD') }}}:
       case {{{ cDefine('F_SETFD') }}}:
@@ -1152,7 +1230,7 @@ LibraryManager.library = {
   posix_fallocate: function(fd, offset, len) {
     // int posix_fallocate(int fd, off_t offset, off_t len);
     // http://pubs.opengroup.org/onlinepubs/009695399/functions/posix_fallocate.html
-    if (!(fd in FS.streams) || FS.streams[fd].link ||
+    if (!FS.streams[fd] || FS.streams[fd].link ||
         FS.streams[fd].isFolder || FS.streams[fd].isDevice) {
       ___setErrNo(ERRNO_CODES.EBADF);
       return -1;
@@ -1180,7 +1258,7 @@ LibraryManager.library = {
       var fd = {{{ makeGetValue('pollfd', 'offsets.fd', 'i32') }}};
       var events = {{{ makeGetValue('pollfd', 'offsets.events', 'i16') }}};
       var revents = 0;
-      if (fd in FS.streams) {
+      if (FS.streams[fd]) {
         var stream = FS.streams[fd];
         if (events & {{{ cDefine('POLLIN') }}}) revents |= {{{ cDefine('POLLIN') }}};
         if (events & {{{ cDefine('POLLOUT') }}}) revents |= {{{ cDefine('POLLOUT') }}};
@@ -1259,7 +1337,7 @@ LibraryManager.library = {
       if (FS.streams[fildes].currentEntry) {
         _free(FS.streams[fildes].currentEntry);
       }
-      delete FS.streams[fildes];
+      FS.streams[fildes] = null;
       return 0;
     } else {
       ___setErrNo(ERRNO_CODES.EBADF);
@@ -1283,7 +1361,7 @@ LibraryManager.library = {
       return fildes;
     } else {
       _close(fildes2);
-      return _fcntl(fildes, 0, allocate([fildes2, 0, 0, 0], 'i32', ALLOC_STACK));  // F_DUPFD.
+      return _fcntl(fildes, 0, allocate([fildes2, 0, 0, 0], 'i32', ALLOC_STACK), true);  // F_DUPFD.
     }
   },
   fchown__deps: ['$FS', '__setErrNo', '$ERRNO_CODES', 'chown'],
@@ -1553,8 +1631,8 @@ LibraryManager.library = {
       var size = Math.min(contents.length - offset, nbyte);
       for (var i = 0; i < size; i++) {
         {{{ makeSetValue('buf', 'i', 'contents[offset + i]', 'i8') }}}
-        bytesRead++;
       }
+      bytesRead += size;
       return bytesRead;
     }
   },
@@ -2281,6 +2359,14 @@ LibraryManager.library = {
     var fields = 0;
     var argIndex = 0;
     var next;
+    // remove initial whitespace
+    while (1) {
+      next = get();
+      if (next == 0) return 0;
+      if (!(next in __scanString.whiteSpace)) break;
+    } 
+    unget(next);
+    next = 1;
     for (var formatIndex = 0; formatIndex < format.length; formatIndex++) {
       if (next <= 0) return fields;
       var next = get();
@@ -2319,11 +2405,10 @@ LibraryManager.library = {
             }
             next = get();
           }
+          unget(next);
           while (buffer.length > last) {
-            buffer.pop();
-            unget();
+            unget(buffer.pop().charCodeAt(0));
           }
-          unget();
           next = get();
         } else {
           var first = true;
@@ -2380,7 +2465,7 @@ LibraryManager.library = {
           next = get();
           if (next <= 0) return fields;  // End of input.
         }
-        unget();
+        unget(next);
       } else {
         // Not a specifier.
         if (format[formatIndex].charCodeAt(0) !== next) {
@@ -2770,7 +2855,7 @@ LibraryManager.library = {
   clearerr: function(stream) {
     // void clearerr(FILE *stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/clearerr.html
-    if (stream in FS.streams) FS.streams[stream].error = false;
+    if (FS.streams[stream]) FS.streams[stream].error = false;
   },
   fclose__deps: ['close', 'fsync'],
   fclose: function(stream) {
@@ -2783,7 +2868,7 @@ LibraryManager.library = {
   fdopen: function(fildes, mode) {
     // FILE *fdopen(int fildes, const char *mode);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/fdopen.html
-    if (fildes in FS.streams) {
+    if (FS.streams[fildes]) {
       var stream = FS.streams[fildes];
       mode = Pointer_stringify(mode);
       if ((mode.indexOf('w') != -1 && !stream.isWrite) ||
@@ -2806,13 +2891,13 @@ LibraryManager.library = {
   feof: function(stream) {
     // int feof(FILE *stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/feof.html
-    return Number(stream in FS.streams && FS.streams[stream].eof);
+    return Number(FS.streams[stream] && FS.streams[stream].eof);
   },
   ferror__deps: ['$FS'],
   ferror: function(stream) {
     // int ferror(FILE *stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/ferror.html
-    return Number(stream in FS.streams && FS.streams[stream].error);
+    return Number(FS.streams[stream] && FS.streams[stream].error);
   },
   fflush__deps: ['$FS', '__setErrNo', '$ERRNO_CODES'],
   fflush: function(stream) {
@@ -2820,7 +2905,7 @@ LibraryManager.library = {
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/fflush.html
     var flush = function(filedes) {
       // Right now we write all data directly, except for output devices.
-      if (filedes in FS.streams && FS.streams[filedes].object.output) {
+      if (FS.streams[filedes] && FS.streams[filedes].object.output) {
         if (!FS.streams[filedes].isTerminal) { // don't flush terminals, it would cause a \n to also appear
           FS.streams[filedes].object.output(null);
         }
@@ -2828,7 +2913,7 @@ LibraryManager.library = {
     };
     try {
       if (stream === 0) {
-        for (var i in FS.streams) flush(i);
+        for (var i = 0; i < FS.streams.length; i++) if (FS.streams[i]) flush(i);
       } else {
         flush(stream);
       }
@@ -2843,7 +2928,7 @@ LibraryManager.library = {
   fgetc: function(stream) {
     // int fgetc(FILE *stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/fgetc.html
-    if (!(stream in FS.streams)) return -1;
+    if (!FS.streams[stream]) return -1;
     var streamObj = FS.streams[stream];
     if (streamObj.eof || streamObj.error) return -1;
     var ret = _read(stream, _fgetc.ret, 1);
@@ -2869,7 +2954,7 @@ LibraryManager.library = {
   fgetpos: function(stream, pos) {
     // int fgetpos(FILE *restrict stream, fpos_t *restrict pos);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/fgetpos.html
-    if (stream in FS.streams) {
+    if (FS.streams[stream]) {
       stream = FS.streams[stream];
       if (stream.object.isDevice) {
         ___setErrNo(ERRNO_CODES.ESPIPE);
@@ -2889,7 +2974,7 @@ LibraryManager.library = {
   fgets: function(s, n, stream) {
     // char *fgets(char *restrict s, int n, FILE *restrict stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/fgets.html
-    if (!(stream in FS.streams)) return 0;
+    if (!FS.streams[stream]) return 0;
     var streamObj = FS.streams[stream];
     if (streamObj.error || streamObj.eof) return 0;
     var byte_;
@@ -2968,7 +3053,7 @@ LibraryManager.library = {
     {{{ makeSetValue('_fputc.ret', '0', 'chr', 'i8') }}}
     var ret = _write(stream, _fputc.ret, 1);
     if (ret == -1) {
-      if (stream in FS.streams) FS.streams[stream].error = true;
+      if (FS.streams[stream]) FS.streams[stream].error = true;
       return -1;
     } else {
       return chr;
@@ -3024,7 +3109,7 @@ LibraryManager.library = {
     // FILE *freopen(const char *restrict filename, const char *restrict mode, FILE *restrict stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/freopen.html
     if (!filename) {
-      if (!(stream in FS.streams)) {
+      if (!FS.streams[stream]) {
         ___setErrNo(ERRNO_CODES.EBADF);
         return 0;
       }
@@ -3053,7 +3138,7 @@ LibraryManager.library = {
   fsetpos: function(stream, pos) {
     // int fsetpos(FILE *stream, const fpos_t *pos);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/fsetpos.html
-    if (stream in FS.streams) {
+    if (FS.streams[stream]) {
       if (FS.streams[stream].object.isDevice) {
         ___setErrNo(ERRNO_CODES.EPIPE);
         return -1;
@@ -3073,7 +3158,7 @@ LibraryManager.library = {
   ftell: function(stream) {
     // long ftell(FILE *stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/ftell.html
-    if (stream in FS.streams) {
+    if (FS.streams[stream]) {
       stream = FS.streams[stream];
       if (stream.object.isDevice) {
         ___setErrNo(ERRNO_CODES.ESPIPE);
@@ -3169,7 +3254,7 @@ LibraryManager.library = {
     // void rewind(FILE *stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/rewind.html
     _fseek(stream, 0, 0);  // SEEK_SET.
-    if (stream in FS.streams) FS.streams[stream].error = false;
+    if (FS.streams[stream]) FS.streams[stream].error = false;
   },
   setvbuf: function(stream, buf, type, size) {
     // int setvbuf(FILE *restrict stream, char *restrict buf, int type, size_t size);
@@ -3228,7 +3313,7 @@ LibraryManager.library = {
   ungetc: function(c, stream) {
     // int ungetc(int c, FILE *stream);
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/ungetc.html
-    if (stream in FS.streams) {
+    if (FS.streams[stream]) {
       c = unSign(c & 0xFF);
       FS.streams[stream].ungotten.push(c);
       return c;
@@ -3249,7 +3334,7 @@ LibraryManager.library = {
   fscanf: function(stream, format, varargs) {
     // int fscanf(FILE *restrict stream, const char *restrict format, ... );
     // http://pubs.opengroup.org/onlinepubs/000095399/functions/scanf.html
-    if (stream in FS.streams) {
+    if (FS.streams[stream]) {
       var get = function() { return _fgetc(stream); };
       var unget = function(c) { return _ungetc(c, stream); };
       return __scanString(format, get, unget, varargs);
@@ -3391,17 +3476,8 @@ LibraryManager.library = {
     return ret;
   },
 
-  abs: 'Math.abs', // XXX should be integer?
-
-  atoi__deps: ['isspace', 'isdigit'],
-  atoi: function(s) {
-    var c;
-    while ((c = {{{ makeGetValue('s', 0, 'i8') }}}) && _isspace(c)) s++;
-    if (!c || !_isdigit(c)) return 0;
-    var e = s;
-    while ((c = {{{ makeGetValue('e', 0, 'i8') }}}) && _isdigit(c)) e++;
-    return Math.floor(Number(Pointer_stringify(s).substr(0, e-s)));
-  },
+  abs: 'Math.abs',
+  labs: 'Math.abs',
 
   exit__deps: ['_exit'],
   exit: function(status) {
@@ -3637,10 +3713,20 @@ LibraryManager.library = {
   },
   strtoull_l: 'strtoull', // no locale support yet
 
+  atof__deps: ['strtod'],
   atof: function(ptr) {
-    var str = Pointer_stringify(ptr);
-    var ret = parseFloat(str);
-    return isNaN(ret) ? 0 : ret;
+    return _strtod(ptr, null);
+  },
+
+  atoi__deps: ['strtol'],
+  atoi: function(ptr) {
+    return _strtol(ptr, null, 10);
+  },
+  atol: 'atoi',
+
+  atoll__deps: ['strtoll'],
+  atoll: function(ptr) {
+    return _strtoll(ptr, null, 10);
   },
 
   qsort__deps: ['memcpy'],
@@ -3821,26 +3907,13 @@ LibraryManager.library = {
     return limit;
   },
 
-  // A glibc-like implementation of the C random number generation functions:
-  //   http://pubs.opengroup.org/onlinepubs/000095399/functions/rand.html
-  __rand_state: 42,
-  srand__deps: ['__rand_state'],
-  srand: function(seed) {
-    // void srand(unsigned seed);
-    ___rand_state = seed;
-  },
-  rand__deps: ['__rand_state'],
+  // Use browser's Math.random(). We can't set a seed, though.
+  srand: function(seed) {}, // XXX ignored
   rand: function() {
-    // int rand(void);
-    ___rand_state = (1103515245 * ___rand_state + 12345) % 0x100000000;
-    return ___rand_state & 0x7FFFFFFF;
+    return Math.floor(Math.random()*0x80000000);
   },
-  rand_r: function(seed) {
-    // int rand_r(unsigned *seed);
-    var state = {{{ makeGetValue('seed', 0, 'i32') }}};
-    state = (1103515245 * state + 12345) % 0x100000000;
-    {{{ makeSetValue('seed', 0, 'state', 'i32') }}}
-    return state & 0x7FFFFFFF;
+  rand_r: function(seed) { // XXX ignores the seed
+    return Math.floor(Math.random()*0x80000000);
   },
 
   realpath__deps: ['$FS', '__setErrNo'],
@@ -4073,6 +4146,28 @@ LibraryManager.library = {
     }
     return pdest;
   },
+  
+  strlwr__deps:['tolower'],
+  strlwr: function(pstr){
+    var i = 0;
+    while(1) {
+      var x = {{{ makeGetValue('pstr', 'i', 'i8') }}};
+      if(x == 0) break;
+      {{{ makeSetValue('pstr', 'i', '_tolower(x)', 'i8') }}};
+      i++;
+    }
+  },
+  
+  strupr__deps:['toupper'],
+  strupr: function(pstr){
+    var i = 0;
+    while(1) {
+      var x = {{{ makeGetValue('pstr', 'i', 'i8') }}};
+      if(x == 0) break;
+      {{{ makeSetValue('pstr', 'i', '_toupper(x)', 'i8') }}};
+      i++;
+    }
+  },
 
   strcat__deps: ['strlen'],
   strcat: function(pdest, psrc) {
@@ -4116,8 +4211,8 @@ LibraryManager.library = {
   strncmp: function(px, py, n) {
     var i = 0;
     while (i < n) {
-      var x = {{{ makeGetValue('px', 'i', 'i8') }}};
-      var y = {{{ makeGetValue('py', 'i', 'i8') }}};
+      var x = {{{ makeGetValue('px', 'i', 'i8', 0, 1) }}};
+      var y = {{{ makeGetValue('py', 'i', 'i8', 0, 1) }}};
       if (x == y && x == 0) return 0;
       if (x == 0) return -1;
       if (y == 0) return 1;
@@ -4135,8 +4230,8 @@ LibraryManager.library = {
   strncasecmp: function(px, py, n) {
     var i = 0;
     while (i < n) {
-      var x = _tolower({{{ makeGetValue('px', 'i', 'i8') }}});
-      var y = _tolower({{{ makeGetValue('py', 'i', 'i8') }}});
+      var x = _tolower({{{ makeGetValue('px', 'i', 'i8', 0, 1) }}});
+      var y = _tolower({{{ makeGetValue('py', 'i', 'i8', 0, 1) }}});
       if (x == y && x == 0) return 0;
       if (x == 0) return -1;
       if (y == 0) return 1;
@@ -4152,8 +4247,8 @@ LibraryManager.library = {
 
   memcmp: function(p1, p2, num) {
     for (var i = 0; i < num; i++) {
-      var v1 = {{{ makeGetValue('p1', 'i', 'i8') }}};
-      var v2 = {{{ makeGetValue('p2', 'i', 'i8') }}};
+      var v1 = {{{ makeGetValue('p1', 'i', 'i8', 0, 1) }}};
+      var v2 = {{{ makeGetValue('p2', 'i', 'i8', 0, 1) }}};
       if (v1 != v2) return v1 > v2 ? 1 : -1;
     }
     return 0;
@@ -4169,10 +4264,22 @@ LibraryManager.library = {
   },
 
   strstr: function(ptr1, ptr2) {
-    var str1 = Pointer_stringify(ptr1);
-    var str2 = Pointer_stringify(ptr2);
-    var ret = str1.search(str2);
-    return ret >= 0 ? ptr1 + ret : 0;
+    var check = 0, start;
+    do {
+      if (!check) {
+        start = ptr1;
+        check = ptr2;
+      }
+      var curr1 = {{{ makeGetValue('ptr1++', 0, 'i8') }}};
+      var curr2 = {{{ makeGetValue('check++', 0, 'i8') }}};
+      if (curr2 == 0) return start;
+      if (curr2 != curr1) {
+        // rewind to one character after start, to find ez in eeez
+        ptr1 = start + 1;
+        check = 0;
+      }
+    } while (curr1);
+    return 0;
   },
 
   strchr: function(ptr, chr) {
@@ -4497,33 +4604,11 @@ LibraryManager.library = {
   },
 
   llvm_bswap_i16: function(x) {
-    x = unSign(x, 32);
-    var bytes = [];
-    bytes[0] = x & 255;
-    x >>= 8;
-    bytes[1] = x & 255;
-    x >>= 8;
-    var ret = 0;
-    ret <<= 8;
-    ret += bytes[0];
-    ret <<= 8;
-    ret += bytes[1];
-    return ret;
+    return ((x&0xff)<<8) | ((x>>8)&0xff);
   },
 
   llvm_bswap_i32: function(x) {
-    x = unSign(x, 32);
-    var bytes = [];
-    for (var i = 0; i < 4; i++) {
-      bytes[i] = x & 255;
-      x >>= 8;
-    }
-    var ret = 0;
-    for (i = 0; i < 4; i++) {
-      ret <<= 8;
-      ret += bytes[i];
-    }
-    return ret;
+    return ((x&0xff)<<24) | (((x>>8)&0xff)<<16) | (((x>>16)&0xff)<<8) | (x>>>24);
   },
 
   llvm_ctlz_i32: function(x) {
@@ -4771,12 +4856,39 @@ LibraryManager.library = {
   // type_info for void*.
   _ZTIPv: [0],
 
+  llvm_uadd_with_overflow_i8: function(x, y) {
+    x = x & 0xff;
+    y = y & 0xff;
+    return {
+      f0: (x+y) & 0xff,
+      f1: x+y > 255
+    };
+  },
+
+  llvm_umul_with_overflow_i8: function(x, y) {
+    x = x & 0xff;
+    y = y & 0xff;
+    return {
+      f0: (x*y) & 0xff,
+      f1: x*y > 255
+    };
+  },
+
   llvm_uadd_with_overflow_i16: function(x, y) {
-    x = (x>>>0) & 0xffff;
-    y = (y>>>0) & 0xffff;
+    x = x & 0xffff;
+    y = y & 0xffff;
     return {
       f0: (x+y) & 0xffff,
       f1: x+y > 65535
+    };
+  },
+
+  llvm_umul_with_overflow_i16: function(x, y) {
+    x = x & 0xffff;
+    y = y & 0xffff;
+    return {
+      f0: (x*y) & 0xffff,
+      f1: x*y > 65535
     };
   },
 
@@ -4891,7 +5003,7 @@ LibraryManager.library = {
   floor: 'Math.floor',
   floorf: 'Math.floor',
   pow: 'Math.pow',
-  powf: 'Math.powf',
+  powf: 'Math.pow',
   llvm_sqrt_f32: 'Math.sqrt',
   llvm_sqrt_f64: 'Math.sqrt',
   llvm_pow_f32: 'Math.pow',

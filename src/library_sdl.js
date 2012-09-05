@@ -28,6 +28,9 @@ var LibrarySDL = {
     mixerNumChannels: 2,
     mixerChunkSize: 1024,
 
+    GL: false, // Set to true if we call SDL_SetVideoMode with SDL_OPENGL, and if so, we do not create 2D canvases&contexts for blitting
+               // Note that images loaded before SDL_SetVideoMode will not get this optimization
+
     keyboardState: null,
     shiftKey: false,
     ctrlKey: false,
@@ -42,6 +45,7 @@ var LibrarySDL = {
     DOMEventToSDLEvent: {},
 
     keyCodes: { // DOM code ==> SDL code. See https://developer.mozilla.org/en/Document_Object_Model_%28DOM%29/KeyboardEvent and SDL_keycode.h
+      46: 127, // SDLK_DEL == '\177'
       38:  1106, // up arrow
       40:  1105, // down arrow
       37:  1104, // left arrow
@@ -50,10 +54,10 @@ var LibrarySDL = {
       33: 1099, // pagedup
       34: 1102, // pagedown
 
-      17:  305, // control (right, or left)
-      18:  308, // alt
+      17:  1248, // control (right, or left)
+      18:  1250, // alt
       173: 45, // minus
-      16:  304, // shift
+      16:  1249, // shift
       
       96: 88 | 1<<10, // keypad 0
       97: 89 | 1<<10, // keypad 1
@@ -263,6 +267,7 @@ var LibrarySDL = {
 
       // Decide if we want to use WebGL or not
       var useWebGL = (flags & 0x04000000) != 0; // SDL_OPENGL
+      SDL.GL = SDL.GL || useWebGL;
       var canvas;
       if (!usePageCanvas) {
         canvas = document.createElement('canvas');
@@ -320,14 +325,13 @@ var LibrarySDL = {
         var colorBase = indexBase * 4;
         for (var x = startX; x < endX; ++x) {
           // HWPALETTE have only 256 colors (not rgba)
-          var index = {{{ makeGetValue('buffer + indexBase + x', '0', 'i8', null, true) }}};
-          var color = colors[index] || [Math.floor(Math.random()*255),Math.floor(Math.random()*255),Math.floor(Math.random()*255)]; // XXX
+          var index = {{{ makeGetValue('buffer + indexBase + x', '0', 'i8', null, true) }}} * 3;
           var colorOffset = colorBase + x * 4;
 
-          data[colorOffset   ] = color[0];
-          data[colorOffset +1] = color[1];
-          data[colorOffset +2] = color[2];
-          //unused: data[colorOffset +3] = color[3];
+          data[colorOffset   ] = colors[index   ];
+          data[colorOffset +1] = colors[index +1];
+          data[colorOffset +2] = colors[index +2];
+          //unused: data[colorOffset +3] = color[index +3];
         }
       }
     },
@@ -346,11 +350,19 @@ var LibrarySDL = {
           event['movementX'] = event['mozMovementX'];
           event['movementY'] = event['mozMovementY'];
           // fall through
-        case 'keydown': case 'keyup': case 'mousedown': case 'mouseup': case 'DOMMouseScroll':
-          if (event.type == 'DOMMouseScroll') {
-            event = {
+        case 'keydown': case 'keyup': case 'mousedown': case 'mouseup': case 'DOMMouseScroll': case 'mousewheel':
+          if (event.type == 'DOMMouseScroll' || event.type == 'mousewheel') {
+            var button = (event.type == 'DOMMouseScroll' ? event.detail : -event.wheelDelta) > 0 ? 4 : 3;
+            var event2 = {
               type: 'mousedown',
-              button: event.detail > 0 ? 4 : 3,
+              button: button,
+              pageX: event.pageX,
+              pageY: event.pageY
+            };
+            SDL.events.push(event2);
+            event = {
+              type: 'mouseup',
+              button: button,
               pageX: event.pageX,
               pageY: event.pageY
             };
@@ -366,11 +378,6 @@ var LibrarySDL = {
           if (SDL.events.length >= 10000) {
             Module.printErr('SDL event queue full, dropping earliest event');
             SDL.events.shift();
-          }
-          if ((event.keyCode >= 37 && event.keyCode <= 40) || // arrow keys
-              event.keyCode == 32 || // space
-              event.keyCode == 33 || event.keyCode == 34) { // page up/down
-            event.preventDefault();
           }
           break;
         case 'mouseout':
@@ -426,9 +433,13 @@ var LibrarySDL = {
 
           {{{ makeSetValue('SDL.keyboardState', 'SDL.keyCodes[event.keyCode] || event.keyCode', 'event.type == "keydown"', 'i8') }}};
 
-          SDL.shiftKey = event.shiftKey;
-          SDL.ctrlKey = event.ctrlKey;
-          SDL.altKey = event.altKey;
+          if (event.keyCode == 16) { //shift
+            SDL.shiftKey = event.type == "keydown";
+          } else if (event.keyCode == 17) { //control
+            SDL.ctrlKey = event.type == "keydown";
+          } else if (event.keyCode == 18) { //alt
+            SDL.altKey = event.type == "keydown";
+          }
 
           break;
         }
@@ -542,9 +553,10 @@ var LibrarySDL = {
 
   SDL_Init: function(what) {
     SDL.startTime = Date.now();
-    ['keydown', 'keyup'].forEach(function(event) {
-      addEventListener(event, SDL.receiveEvent, true);
-    });
+    // capture all key events. we just keep down and up, but also capture press to prevent default actions
+    document.onkeydown = SDL.receiveEvent;
+    document.onkeyup = SDL.receiveEvent;
+    document.onkeypress = SDL.receiveEvent;
     SDL.keyboardState = _malloc(0x10000);
     _memset(SDL.keyboardState, 0, 0x10000);
     // Initialize this structure carefully for closure
@@ -611,7 +623,7 @@ var LibrarySDL = {
   },
 
   SDL_SetVideoMode: function(width, height, depth, flags) {
-    ['mousedown', 'mouseup', 'mousemove', 'DOMMouseScroll', 'mouseout'].forEach(function(event) {
+    ['mousedown', 'mouseup', 'mousemove', 'DOMMouseScroll', 'mousewheel', 'mouseout'].forEach(function(event) {
       Module['canvas'].addEventListener(event, SDL.receiveEvent, true);
     });
     Module['canvas'].width = width;
@@ -695,6 +707,8 @@ var LibrarySDL = {
 
   // Copy data from the C++-accessible storage to the canvas backing
   SDL_UnlockSurface: function(surf) {
+    assert(!SDL.GL); // in GL mode we do not keep around 2D canvases and contexts
+
     var surfData = SDL.surfaces[surf];
 
     surfData.locked--;
@@ -740,12 +754,11 @@ var LibrarySDL = {
         var base = y*width*4;
         for (var x = 0; x < width; x++) {
           // See comment above about signs
-          var val = {{{ makeGetValue('s++', '0', 'i8', null, true) }}};
-          var color = colors[val] || [Math.floor(Math.random()*255),Math.floor(Math.random()*255),Math.floor(Math.random()*255)]; // XXX
+          var val = {{{ makeGetValue('s++', '0', 'i8', null, true) }}} * 3;
           var start = base + x*4;
-          data[start]   = color[0];
-          data[start+1] = color[1];
-          data[start+2] = color[2];
+          data[start]   = colors[val];
+          data[start+1] = colors[val+1];
+          data[start+2] = colors[val+2];
         }
         s += width*3;
       }
@@ -792,9 +805,9 @@ var LibrarySDL = {
 
   SDL_GetModState: function() {
     // TODO: numlock, capslock, etc.
-    return (SDL.shiftKey ? 0x0001 & 0x0002 : 0) | // KMOD_LSHIFT & KMOD_RSHIFT
-           (SDL.ctrlKey ? 0x0040 & 0x0080 : 0) | // KMOD_LCTRL & KMOD_RCTRL
-           (SDL.altKey ? 0x0100 & 0x0200 : 0); // KMOD_LALT & KMOD_RALT
+    return (SDL.shiftKey ? 0x0001 | 0x0002 : 0) | // KMOD_LSHIFT & KMOD_RSHIFT
+           (SDL.ctrlKey ? 0x0040 | 0x0080 : 0) | // KMOD_LCTRL & KMOD_RCTRL
+           (SDL.altKey ? 0x0100 | 0x0200 : 0); // KMOD_LALT & KMOD_RALT
   },
 
   SDL_GetMouseState: function(x, y) {
@@ -869,8 +882,8 @@ var LibrarySDL = {
       //in SDL_HWPALETTE color is index (0..255)
       //so we should translate 1 byte value to
       //32 bit canvas
-      color = surfData.colors[color] || [0, 0, 0, 255];
-      color = SDL.translateRGBAToColor(color[0], color[1], color[2], 255);
+      var index = color * 3;
+      color = SDL.translateRGBAToColor(surfData.colors[index], surfData.colors[index +1], surfData.colors[index +2], 255);
     }
 
     var r = rect ? SDL.loadRect(rect) : { x: 0, y: 0, w: surfData.width, h: surfData.height };
@@ -935,16 +948,14 @@ var LibrarySDL = {
     // often wants to change portion 
     // of palette not all palette.
     if (!surfData.colors) {
-      surfData.colors = [];
+      surfData.colors = new Uint8Array(256 * 3); //256 RGB colors
     } 
 
     for (var i = firstColor; i < firstColor + nColors; i++) {
-      surfData.colors[i] = [
-        {{{ makeGetValue('colors', 'i*4',     'i8', null, true) }}},
-        {{{ makeGetValue('colors', 'i*4 + 1', 'i8', null, true) }}},
-        {{{ makeGetValue('colors', 'i*4 + 2', 'i8', null, true) }}},
-        {{{ makeGetValue('colors', 'i*4 + 3', 'i8', null, true) }}}
-      ];
+      var index = i *3;
+      surfData.colors[index] = {{{ makeGetValue('colors', 'i*4', 'i8', null, true) }}};
+      surfData.colors[index +1] = {{{ makeGetValue('colors', 'i*4 +1', 'i8', null, true) }}};
+      surfData.colors[index +2] = {{{ makeGetValue('colors', 'i*4 +2', 'i8', null, true) }}};
     }
 
     return 1;
@@ -952,7 +963,12 @@ var LibrarySDL = {
 
   SDL_MapRGB: function(fmt, r, g, b) {
     // Canvas screens are always RGBA
-    return r + (g << 8) + (b << 16);
+    return 0xff+((b&0xff)<<8)+((g&0xff)<<16)+((r&0xff)<<24)
+  },
+
+  SDL_MapRGBA: function(fmt, r, g, b, a) {
+    // Canvas screens are always RGBA
+    return (a&0xff)+((b&0xff)<<8)+((g&0xff)<<16)+((r&0xff)<<24)
   },
 
   SDL_WM_GrabInput: function() {},
@@ -972,8 +988,12 @@ var LibrarySDL = {
     }
     var raw = Module["preloadedImages"][filename];
     if (!raw) {
+      if (raw === null) Module.printErr('Trying to reuse preloaded image, but freePreloadedMediaOnUse is set!');
       Runtime.warnOnce('Cannot find preloaded image ' + filename);
       return 0;
+    }
+    if (Module['freePreloadedMediaOnUse']) {
+      Module["preloadedImages"][filename] = null;
     }
     var surf = SDL.makeSurface(raw.width, raw.height, 0, false, 'load:' + filename);
     var surfData = SDL.surfaces[surf];
@@ -984,6 +1004,10 @@ var LibrarySDL = {
     //     are in fact available, so we retrieve it here. This does add overhead though.
     _SDL_LockSurface(surf);
     surfData.locked--; // The surface is not actually locked in this hack
+    if (SDL.GL) {
+      // After getting the pixel data, we can free the canvas and context if we do not need to do 2D canvas blitting
+      surfData.canvas = surfData.ctx = null;
+    }
     return surf;
   },
   SDL_LoadBMP: 'IMG_Load',
@@ -1105,8 +1129,12 @@ var LibrarySDL = {
     filename = FS.standardizePath(Pointer_stringify(filename));
     var raw = Module["preloadedAudios"][filename];
     if (!raw) {
+      if (raw === null) Module.printErr('Trying to reuse preloaded audio, but freePreloadedMediaOnUse is set!');
       Runtime.warnOnce('Cannot find preloaded audio ' + filename);
       return 0;
+    }
+    if (Module['freePreloadedMediaOnUse']) {
+      Module["preloadedAudios"][filename] = null;
     }
     var id = SDL.audios.length;
     SDL.audios.push({

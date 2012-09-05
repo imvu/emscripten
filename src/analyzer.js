@@ -253,6 +253,7 @@ function analyzer(data, sidePass) {
               }
               // This is an illegal-containing line, and it is unfolded. Legalize it now
               dprint('legalizer', 'Legalizing ' + item.intertype + ' at line ' + item.lineNum);
+              var finalizer = null;
               switch (item.intertype) {
                 case 'store': {
                   var toAdd = [];
@@ -486,12 +487,13 @@ function analyzer(data, sidePass) {
                       };
                       break;
                     }
-                    case 'or': case 'and': case 'xor': {
+                    case 'or': case 'and': case 'xor': case 'icmp': {
                       var otherElements = getLegalVars(value.params[1].ident, sourceBits);
                       processor = function(result, j) {
                         return {
                           intertype: 'mathop',
                           op: value.op,
+                          variant: value.variant,
                           type: 'i' + otherElements[j].bits,
                           params: [
                             result,
@@ -499,10 +501,35 @@ function analyzer(data, sidePass) {
                           ]
                         };
                       };
+                      if (value.op == 'icmp') {
+                        if (sourceBits == 64) { // handle the i64 case in processMathOp, where we handle full i64 math
+                          i++;
+                          continue;
+                        }
+                        finalizer = function() {
+                          var ident = '';
+                          for (var i = 0; i < targetElements.length; i++) {
+                            if (i > 0) {
+                              switch(value.variant) {
+                                case 'eq': ident += '&&'; break;
+                                case 'ne': ident += '||'; break;
+                                default: throw 'unhandleable illegal icmp: ' + value.variant;
+                              }
+                            }
+                            ident += targetElements[i].ident;
+                          }
+                          return {
+                            intertype: 'value',
+                            ident: ident,
+                            type: 'rawJS',
+                            assignTo: item.assignTo
+                          };
+                        }
+                      }
                       break;
                     }
                     case 'add': case 'sub': case 'sdiv': case 'udiv': case 'mul': case 'urem': case 'srem':
-                    case 'icmp':case 'uitofp': case 'sitofp': {
+                    case 'uitofp': case 'sitofp': {
                       // We cannot do these in parallel chunks of 32-bit operations. We will handle these in processMathop
                       i++;
                       continue;
@@ -534,7 +561,7 @@ function analyzer(data, sidePass) {
                   var whole = shifts >= 0 ? Math.floor(shifts/32) : Math.ceil(shifts/32);
                   var fraction = Math.abs(shifts % 32);
                   if (signed) {
-                    var signedFill = '((' + sourceElements[sourceElements.length-1].ident + '|0) < 0 ? -1 : 0)';
+                    var signedFill = '(' + makeSignOp(sourceElements[sourceElements.length-1].ident, 'i' + sourceElements[sourceElements.length-1].bits, 're', 1, 1) + ' < 0 ? -1 : 0)';
                     var signedKeepAlive = { intertype: 'value', ident: sourceElements[sourceElements.length-1].ident, type: 'i32' };
                   }
                   for (var j = 0; j < targetElements.length; j++) {
@@ -611,6 +638,8 @@ function analyzer(data, sidePass) {
                     };
                     legalValue.assignTo = item.assignTo;
                     toAdd.push(legalValue);
+                  } else if (finalizer) {
+                    toAdd.push(finalizer());
                   }
                   i += removeAndAdd(label.lines, i, toAdd);
                   continue;
@@ -1362,6 +1391,9 @@ function analyzer(data, sidePass) {
 
           // Allocas
           var finishedInitial = false;
+
+          lines = func.lines; // We need to consider all the function lines now, not just the first label
+
           for (var i = 0; i < lines.length; i++) {
             var item = lines[i];
             if (!item.assignTo || item.intertype != 'alloca' || !isNumber(item.allocatedNum)) {

@@ -48,6 +48,7 @@ has_preloaded = False
 in_compress = 0
 pre_run = False
 crunch = 0
+plugins = []
 
 for arg in sys.argv[1:]:
   if arg == '--preload':
@@ -75,6 +76,12 @@ for arg in sys.argv[1:]:
     in_preload = False
     in_embed = False
     in_compress = 0
+  elif arg.startswith('--plugin'):
+    plugin = open(arg.split('=')[1], 'r').read()
+    eval(plugin) # should append itself to plugins
+    in_preload = False
+    in_embed = False
+    in_compress = 0
   elif in_preload:
     data_files.append({ 'name': arg, 'mode': 'preload' })
   elif in_embed:
@@ -92,26 +99,9 @@ for arg in sys.argv[1:]:
 
 code = '''
 function assert(check, msg) {
-  if (!check) throw msg;
+  if (!check) throw msg + new Error().stack;
 }
 '''
-
-if has_preloaded:
-  code += '''
-  var BlobBuilder = typeof MozBlobBuilder != "undefined" ? MozBlobBuilder : (typeof WebKitBlobBuilder != "undefined" ? WebKitBlobBuilder : console.log("warning: cannot build blobs"));
-  var URLObject = typeof window != "undefined" ? (window.URL ? window.URL : window.webkitURL) : console.log("warning: cannot create object URLs");
-  var hasBlobConstructor;
-  try {
-    new Blob();
-    hasBlobConstructor = true;
-  } catch(e) {
-    hasBlobConstructor = false;
-    console.log("warning: no blob constructor, cannot create blobs with mimetypes");
-  }
-'''
-
-  code += 'Module["preloadedImages"] = {}; // maps url to image data\n'
-  code += 'Module["preloadedAudios"] = {}; // maps url to audio data\n'
 
 # Expand directories into individual files
 def add(mode, dirname, names):
@@ -136,6 +126,11 @@ def was_seen(name):
   seen[name] = 1
   return False
 data_files = filter(lambda file_: not was_seen(file_['name']), data_files)
+
+# Apply plugins
+for file_ in data_files:
+  for plugin in plugins:
+    plugin(file_)
 
 # Crunch files
 if crunch:
@@ -182,6 +177,10 @@ if crunch:
       except:
         format = []
       Popen([CRUNCH, '-file', file_['name'], '-quality', crunch] + format, stdout=sys.stderr).communicate()
+      #if not os.path.exists(os.path.basename(crunch_name)):
+      #  print >> sys.stderr, 'Failed to crunch, perhaps a weird dxt format? Looking for a source PNG for the DDS'
+      #  Popen([CRUNCH, '-file', unsuffixed(file_['name']) + '.png', '-quality', crunch] + format, stdout=sys.stderr).communicate()
+      assert os.path.exists(os.path.basename(crunch_name)), 'crunch failed to generate output'
       shutil.move(os.path.basename(crunch_name), crunch_name) # crunch places files in the current dir
       # prepend the dds header
       crunched = open(crunch_name, 'rb').read()
@@ -240,67 +239,12 @@ for file_ in data_files:
     # Preload
     varname = 'filePreload%d' % counter
     counter += 1
-    image = filename.endswith(IMAGE_SUFFIXES)
-    audio = filename.endswith(AUDIO_SUFFIXES)
     dds = crunch and filename.endswith(CRUNCH_INPUT_SUFFIX)
 
     prepare = ''
-    finish = "Module['removeRunDependency']();\n"
+    finish = "Module['removeRunDependency']('fp %s');\n" % filename
 
-    if image:
-      finish =  '''
-        var bb = new BlobBuilder();
-        bb.append(byteArray.buffer);
-        var b = bb.getBlob();
-        var url = URLObject.createObjectURL(b);
-        var img = new Image();
-        img.onload = function() {
-          assert(img.complete, 'Image %(filename)s could not be decoded');
-          var canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          var ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          Module["preloadedImages"]['%(filename)s'] = canvas;
-          URLObject.revokeObjectURL(url);
-          Module['removeRunDependency']();
-        };
-        img.onerror = function(event) {
-          console.log('Image %(filename)s could not be decoded');
-        };
-        img.src = url;
-''' % { 'filename': filename }
-    elif audio:
-      # Need actual blob constructor here, to set the mimetype or else audios fail to decode
-      finish =  '''
-        if (hasBlobConstructor) {
-          var b = new Blob([byteArray.buffer], { type: '%(mimetype)s' });
-          var url = URLObject.createObjectURL(b); // XXX we never revoke this!
-          var audio = new Audio();
-          audio.removedDependency = false;
-          audio['oncanplaythrough'] = function() { // XXX string for closure
-            audio['oncanplaythrough'] = null;
-            Module["preloadedAudios"]['%(filename)s'] = audio;
-            if (!audio.removedDependency) {
-              Module['removeRunDependency']();
-              audio.removedDependency = true;
-            }
-          };
-          audio.onerror = function(event) {
-            if (!audio.removedDependency) {
-              console.log('Audio %(filename)s could not be decoded or timed out trying to decode');
-              Module['removeRunDependency']();
-              audio.removedDependency = true;
-            }
-          };
-          setTimeout(audio.onerror, 2000); // workaround for chromium bug 124926 (still no audio with this, but at least we don't hang)
-          audio.src = url;
-        } else {
-          Module["preloadedAudios"]['%(filename)s'] = new Audio(); // empty shim
-          Module['removeRunDependency']();
-        }
-''' % { 'filename': filename, 'mimetype': AUDIO_MIMETYPES[suffix(filename)] }
-    elif dds:
+    if dds:
       # decompress crunch format into dds
       prepare = '''
         var ddsHeader = byteArray.subarray(0, %(dds_header_size)d);
@@ -310,8 +254,7 @@ for file_ in data_files:
           byteArray.set(ddsData, %(dds_header_size)d);
 ''' % { 'filename': filename, 'dds_header_size': DDS_HEADER_SIZE }
 
-      finish = '''
-          Module['removeRunDependency']();
+      finish += '''
         });
 '''
 
@@ -322,12 +265,13 @@ for file_ in data_files:
     %(varname)s.onload = function() {
       var arrayBuffer = %(varname)s.response;
       assert(arrayBuffer, 'Loading file %(filename)s failed.');
-      var byteArray = arrayBuffer.byteLength ? new Uint8Array(arrayBuffer) : arrayBuffer;
+      var byteArray = !arrayBuffer.subarray ? new Uint8Array(arrayBuffer) : arrayBuffer;
       %(prepare)s
-      Module['FS_createDataFile']('/%(dirname)s', '%(basename)s', byteArray, true, true);
-      %(finish)s
+      Module['FS_createPreloadedFile']('/%(dirname)s', '%(basename)s', byteArray, true, true, function() {
+        %(finish)s
+      }%(fail)s);
     };
-    Module['addRunDependency']();
+    Module['addRunDependency']('fp %(filename)s');
     %(varname)s.send(null);
 ''' % {
         'request': 'DataRequest', # In the past we also supported XHRs here
@@ -336,7 +280,8 @@ for file_ in data_files:
         'dirname': os.path.dirname(filename),
         'basename': os.path.basename(filename),
         'prepare': prepare,
-        'finish': finish
+        'finish': finish,
+        'fail': '' if filename[-4:] not in AUDIO_SUFFIXES else ''', function() { Module['removeRunDependency']('fp %s') }''' % filename # workaround for chromium bug 124926 (still no audio with this, but at least we don't hang)
   }
   else:
     assert 0
@@ -351,7 +296,7 @@ if has_preloaded:
         curr.response = byteArray.subarray(%d,%d);
         curr.onload();
       ''' % (file_['name'], file_['data_start'], file_['data_end'])
-  use_data += "          Module['removeRunDependency']();\n"
+  use_data += "          Module['removeRunDependency']('datafile');\n"
 
   if Compression.on:
     use_data = '''
@@ -363,6 +308,13 @@ if has_preloaded:
 
   code += '''
     var dataFile = new XMLHttpRequest();
+    dataFile.onprogress = function(event) {
+      if (event.loaded && event.total) {
+        Module.setStatus('Downloading data... (' + event.loaded + '/' + event.total + ')');
+      } else {
+        Module.setStatus('Downloading data...');
+      }
+    }
     dataFile.open('GET', '%s', true);
     dataFile.responseType = 'arraybuffer';
     dataFile.onload = function() {
@@ -372,10 +324,10 @@ if has_preloaded:
       var curr;
       %s
     };
-    Module['addRunDependency']();
+    Module['addRunDependency']('datafile');
     dataFile.send(null);
     if (Module['setStatus']) Module['setStatus']('Downloading...');
-  ''' % (Compression.compressed_name(data_target) if Compression.on else data_target, use_data)
+  ''' % (os.path.basename(Compression.compressed_name(data_target) if Compression.on else data_target), use_data) # use basename because from the browser's point of view, we need to find the datafile in the same dir as the html file
 
 if pre_run:
   print '''

@@ -43,6 +43,19 @@ except Exception, e:
   print >> sys.stderr, 'Error in evaluating %s (at %s): %s, text: %s' % (EM_CONFIG, CONFIG_FILE, str(e), config_text)
   sys.exit(1)
 
+# Expectations
+
+EXPECTED_LLVM_VERSION = (3,1)
+
+def check_llvm_version():
+  try:
+    expected = 'clang version ' + '.'.join(map(str, EXPECTED_LLVM_VERSION))
+    actual = Popen([CLANG, '-v'], stderr=PIPE).communicate()[1].split('\n')[0][0:len(expected)]
+    if expected != actual:
+      print >> sys.stderr, 'warning: LLVM version appears incorrect (seeing "%s", expected "%s")' % (actual, expected)
+  except Exception, e:
+    print >> sys.stderr, 'warning: Could not verify LLVM version: %s' % str(e)
+
 # Check that basic stuff we need (a JS engine to compile, Node.js, and Clang and LLVM)
 # exists.
 # The test runner always does this check (through |force|). emcc does this less frequently,
@@ -64,6 +77,12 @@ def check_sanity(force=False):
 
       print >> sys.stderr, '(Emscripten: Config file changed, clearing cache)' # LLVM may have changed, etc.
       Cache.erase()
+
+    check_llvm_version() # just a warning, not a fatal check - do it even if EM_IGNORE_SANITY is on
+
+    if os.environ.get('EM_IGNORE_SANITY'):
+      print >> sys.stderr, 'EM_IGNORE_SANITY set, ignoring sanity checks'
+      return
 
     print >> sys.stderr, '(Emscripten: Running sanity checks)'
 
@@ -200,6 +219,7 @@ if USE_EMSDK:
   # allows projects to override them)
   # Note that -nostdinc++ is not needed, since -nostdinc implies that!
   EMSDK_OPTS = ['-nostdinc', '-Xclang', '-nobuiltininc', '-Xclang', '-nostdsysteminc',
+    '-Xclang', '-isystem' + path_from_root('system', 'local', 'include'),
     '-Xclang', '-isystem' + path_from_root('system', 'include'),
     '-Xclang', '-isystem' + path_from_root('system', 'include', 'emscripten'),
     '-Xclang', '-isystem' + path_from_root('system', 'include', 'bsd'), # posix stuff
@@ -423,8 +443,9 @@ class Building:
     env['CC'] = EMCC if not WINDOWS else 'python %r' % EMCC
     env['CXX'] = EMXX if not WINDOWS else 'python %r' % EMXX
     env['AR'] = EMAR if not WINDOWS else 'python %r' % EMAR
+    env['LD'] = EMCC if not WINDOWS else 'python %r' % EMCC
     env['RANLIB'] = EMRANLIB if not WINDOWS else 'python %r' % EMRANLIB
-    env['LIBTOOL'] = EMLIBTOOL if not WINDOWS else 'python %r' % EMLIBTOOL
+    #env['LIBTOOL'] = EMLIBTOOL if not WINDOWS else 'python %r' % EMLIBTOOL
     env['EMMAKEN_COMPILER'] = Building.COMPILER
     env['EMSCRIPTEN_TOOLS'] = path_from_root('tools')
     env['CFLAGS'] = env['EMMAKEN_CFLAGS'] = ' '.join(Building.COMPILER_TEST_OPTS)
@@ -432,6 +453,8 @@ class Building:
     env['HOST_CXX'] = CLANG_CPP
     env['HOST_CFLAGS'] = "-W" #if set to nothing, CFLAGS is used, which we don't want
     env['HOST_CXXFLAGS'] = "-W" #if set to nothing, CXXFLAGS is used, which we don't want
+    env['PKG_CONFIG_LIBDIR'] = path_from_root('system', 'local', 'lib', 'pkgconfig') + os.path.pathsep + path_from_root('system', 'lib', 'pkgconfig')
+    env['PKG_CONFIG_PATH'] = os.environ.get ('EM_PKG_CONFIG_PATH') or ''
     return env
 
   @staticmethod
@@ -535,7 +558,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)''' % { 'winfix': '' if not WINDOWS e
   @staticmethod
   def link(files, target, remove_duplicates=False):
     actual_files = []
-    unresolved_symbols = set() # necessary for .a linking, see below
+    unresolved_symbols = set(['main']) # tracking unresolveds is necessary for .a linking, see below. (and main is always a necessary symbol)
     resolved_symbols = set()
     temp_dir = None
     for f in files:

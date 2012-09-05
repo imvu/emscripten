@@ -10,8 +10,13 @@ mergeInto(LibraryManager.library, {
   $Browser: {
     mainLoop: {
       scheduler: null,
+#if PROFILE_MAIN_LOOP
+      meanTime: 0,
+      lastReport: 0,
+#endif
       shouldPause: false,
       paused: false,
+      queue: [],
       pause: function() {
         Browser.mainLoop.shouldPause = true;
       },
@@ -22,9 +27,168 @@ mergeInto(LibraryManager.library, {
         }
         Browser.mainLoop.shouldPause = false;
       },
+      updateStatus: function() {
+        if (Module['setStatus']) {
+          var message = Module['statusMessage'] || 'Please wait...';
+          var remaining = Browser.mainLoop.remainingBlockers;
+          var expected = Browser.mainLoop.expectedBlockers;
+          if (remaining) {
+            if (remaining < expected) {
+              Module['setStatus'](message + ' (' + (expected - remaining) + '/' + expected + ')');
+            } else {
+              Module['setStatus'](message);
+            }
+          } else {
+            Module['setStatus']('');
+          }
+        }
+      }
     },
     pointerLock: false,
     moduleContextCreatedCallbacks: [],
+
+    ensureObjects: function() {
+      if (Browser.ensured) return;
+      Browser.ensured = true;
+      try {
+        new Blob();
+        Browser.hasBlobConstructor = true;
+      } catch(e) {
+        Browser.hasBlobConstructor = false;
+        console.log("warning: no blob constructor, cannot create blobs with mimetypes");
+      }
+      Browser.BlobBuilder = typeof MozBlobBuilder != "undefined" ? MozBlobBuilder : (typeof WebKitBlobBuilder != "undefined" ? WebKitBlobBuilder : (!Browser.hasBlobConstructor ? console.log("warning: no BlobBuilder") : null));
+      Browser.URLObject = typeof window != "undefined" ? (window.URL ? window.URL : window.webkitURL) : console.log("warning: cannot create object URLs");
+
+      // Support for plugins that can process preloaded files. You can add more of these to
+      // your app by creating and appending to Module.preloadPlugins.
+      //
+      // Each plugin is asked if it can handle a file based on the file's name. If it can,
+      // it is given the file's raw data. When it is done, it calls a callback with the file's
+      // (possibly modified) data. For example, a plugin might decompress a file, or it
+      // might create some side data structure for use later (like an Image element, etc.).
+
+      function getMimetype(name) {
+        return {
+          'jpg': 'image/jpeg',
+          'png': 'image/png',
+          'bmp': 'image/bmp',
+          'ogg': 'audio/ogg',
+          'wav': 'audio/wav',
+          'mp3': 'audio/mpeg'
+        }[name.substr(-3)];
+        return ret;
+      }
+
+      if (!Module["preloadPlugins"]) Module["preloadPlugins"] = [];
+
+      var imagePlugin = {};
+      imagePlugin['canHandle'] = function(name) {
+        return name.substr(-4) in { '.jpg': 1, '.png': 1, '.bmp': 1 };
+      };
+      imagePlugin['handle'] = function(byteArray, name, onload, onerror) {
+        var b = null;
+        if (Browser.hasBlobConstructor) {
+          try {
+            b = new Blob([byteArray], { type: getMimetype(name) });
+          } catch(e) {
+            Runtime.warnOnce('Blob constructor present but fails: ' + e + '; falling back to blob builder');
+          }
+        }
+        if (!b) {
+          var bb = new Browser.BlobBuilder();
+          bb.append((new Uint8Array(byteArray)).buffer); // we need to pass a buffer, and must copy the array to get the right data range
+          b = bb.getBlob();
+        }
+        var url = Browser.URLObject.createObjectURL(b);
+        var img = new Image();
+        img.onload = function() {
+          assert(img.complete, 'Image ' + name + ' could not be decoded');
+          var canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          Module["preloadedImages"][name] = canvas;
+          Browser.URLObject.revokeObjectURL(url);
+          if (onload) onload(byteArray);
+        };
+        img.onerror = function(event) {
+          console.log('Image ' + url + ' could not be decoded');
+          if (onerror) onerror();
+        };
+        img.src = url;
+      };
+      Module['preloadPlugins'].push(imagePlugin);
+
+      var audioPlugin = {};
+      audioPlugin['canHandle'] = function(name) {
+        return name.substr(-4) in { '.ogg': 1, '.wav': 1, '.mp3': 1 };
+      };
+      audioPlugin['handle'] = function(byteArray, name, onload, onerror) {
+        var done = false;
+        function finish(audio) {
+          if (done) return;
+          done = true;
+          Module["preloadedAudios"][name] = audio;
+          if (onload) onload(byteArray);
+        }
+        function fail() {
+          if (done) return;
+          done = true;
+          Module["preloadedAudios"][name] = new Audio(); // empty shim
+          if (onerror) onerror();
+        }
+        if (Browser.hasBlobConstructor) {
+          try {
+            var b = new Blob([byteArray], { type: getMimetype(name) });
+          } catch(e) {
+            return fail();
+          }
+          var url = Browser.URLObject.createObjectURL(b); // XXX we never revoke this!
+          var audio = new Audio();
+          audio.addEventListener('canplaythrough', function() { finish(audio) }, false); // use addEventListener due to chromium bug 124926
+          audio.onerror = function(event) {
+            if (done) return;
+            console.log('warning: browser could not fully decode audio ' + name + ', trying slower base64 approach');
+            function encode64(data) {
+              var BASE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+              var PAD = '=';
+              var ret = '';
+              var leftchar = 0;
+              var leftbits = 0;
+              for (var i = 0; i < data.length; i++) {
+                leftchar = (leftchar << 8) | data[i];
+                leftbits += 8;
+                while (leftbits >= 6) {
+                  var curr = (leftchar >> (leftbits-6)) & 0x3f;
+                  leftbits -= 6;
+                  ret += BASE[curr];
+                }
+              }
+              if (leftbits == 2) {
+                ret += BASE[(leftchar&3) << 4];
+                ret += PAD + PAD;
+              } else if (leftbits == 4) {
+                ret += BASE[(leftchar&0xf) << 2];
+                ret += PAD;
+              }
+              return ret;
+            }
+            audio.src = 'data:audio/x-' + name.substr(-3) + ';base64,' + encode64(byteArray);
+            finish(audio); // we don't wait for confirmation this worked - but it's worth trying
+          };
+          audio.src = url;
+          // workaround for chrome bug 124926 - we do not always get oncanplaythrough or onerror
+          setTimeout(function() {
+            finish(audio); // try to use it even though it is not necessarily ready to play
+          }, 10000);
+        } else {
+          return fail();
+        }
+      };
+      Module['preloadPlugins'].push(audioPlugin);
+    },
 
     createContext: function(canvas, useWebGL, setInModule) {
 #if !USE_TYPED_ARRAYS
@@ -97,17 +261,19 @@ mergeInto(LibraryManager.library, {
     },
 
     requestFullScreen: function() {
-      var canvas = Module.canvas;
+      var canvas = Module['canvas'];
       function fullScreenChange() {
-        if (Module['onFullScreen']) Module['onFullScreen']();
-        if (document['webkitFullScreenElement'] === canvas ||
-            document['mozFullScreenElement'] === canvas ||
-            document['fullScreenElement'] === canvas) {
+        var isFullScreen = false;
+        if ((document['webkitFullScreenElement'] || document['webkitFullscreenElement'] ||
+             document['mozFullScreenElement'] || document['mozFullscreenElement'] ||
+             document['fullScreenElement'] || document['fullscreenElement']) === canvas) {
           canvas.requestPointerLock = canvas['requestPointerLock'] ||
                                       canvas['mozRequestPointerLock'] ||
                                       canvas['webkitRequestPointerLock'];
           canvas.requestPointerLock();
+          isFullScreen = true;
         }
+        if (Module['onFullScreen']) Module['onFullScreen'](isFullScreen);
       }
 
       document.addEventListener('fullscreenchange', fullScreenChange, false);
@@ -171,38 +337,37 @@ mergeInto(LibraryManager.library, {
       xhr.send(null);
     },
 
-    asyncLoad: function(url, callback) {
+    asyncLoad: function(url, onload, onerror) {
       Browser.xhrLoad(url, function(arrayBuffer) {
         assert(arrayBuffer, 'Loading data file "' + url + '" failed (no arrayBuffer).');
-        callback(new Uint8Array(arrayBuffer));
-        removeRunDependency();
+        onload(new Uint8Array(arrayBuffer));
+        removeRunDependency('al ' + url);
       }, function(event) {
-        throw 'Loading data file "' + url + '" failed.';
+        if (onerror) {
+          onerror();
+        } else {
+          throw 'Loading data file "' + url + '" failed.';
+        }
       });
-      addRunDependency();
-    }
+      addRunDependency('al ' + url);
+    },
   },
 
   emscripten_async_wget: function(url, file, onload, onerror) {
-    url = Pointer_stringify(url);
-
-    Browser.xhrLoad(url, function(response) {
-      var absolute = Pointer_stringify(file);
-      var index = absolute.lastIndexOf('/');
-      FS.createDataFile(
-        absolute.substr(0, index),
-        absolute.substr(index +1), 
-        new Uint8Array(response), 
-        true, true);
-
-      if (onload) {
+    var _url = Pointer_stringify(url);
+    var _file = Pointer_stringify(file);
+    var index = _file.lastIndexOf('/');
+    FS.createPreloadedFile(
+      _file.substr(0, index),
+      _file.substr(index +1),
+      _url, true, true,
+      function() {
         FUNCTION_TABLE[onload](file);
-      }
-    }, function(event) {
-      if (onerror) {
+      },
+      function() {
         FUNCTION_TABLE[onerror](file);
       }
-    });
+    );
   },
 
   emscripten_async_run_script__deps: ['emscripten_run_script'],
@@ -220,13 +385,47 @@ mergeInto(LibraryManager.library, {
 
     var jsFunc = FUNCTION_TABLE[func];
     var wrapper = function() {
+      if (Browser.mainLoop.queue.length > 0) {
+        var start = Date.now();
+        var blocker = Browser.mainLoop.queue.shift();
+        blocker.func();
+        if (Browser.mainLoop.remainingBlockers) {
+          var remaining = Browser.mainLoop.remainingBlockers;
+          var next = remaining%1 == 0 ? remaining-1 : Math.floor(remaining);
+          if (blocker.counted) {
+            Browser.mainLoop.remainingBlockers = next;
+          } else {
+            // not counted, but move the progress along a tiny bit
+            next = next + 0.5; // do not steal all the next one's progress
+            Browser.mainLoop.remainingBlockers = (8*remaining + next)/9;
+          }
+        }
+        console.log('main loop blocker "' + blocker.name + '" took ' + (Date.now() - start) + ' ms'); //, left: ' + Browser.mainLoop.remainingBlockers);
+        Browser.mainLoop.updateStatus();
+        setTimeout(wrapper, 0);
+        return;
+      }
       if (Browser.mainLoop.shouldPause) {
         // catch pauses from non-main loop sources
         Browser.mainLoop.paused = true;
         Browser.mainLoop.shouldPause = false;
         return;
       }
+
+#if PROFILE_MAIN_LOOP
+      var start = performance.now();
+#endif
       jsFunc();
+#if PROFILE_MAIN_LOOP
+      var now = performance.now();
+      var time = now - start;
+      Browser.mainLoop.meanTime = (Browser.mainLoop.meanTime*9 + time)/10;
+      if (now - Browser.mainLoop.lastReport > 1000) {
+        console.log('main loop time: ' + Browser.mainLoop.meanTime);
+        Browser.mainLoop.lastReport = now;
+      }
+#endif
+
       if (Browser.mainLoop.shouldPause) {
         // catch pauses from the main loop itself
         Browser.mainLoop.paused = true;
@@ -247,17 +446,33 @@ mergeInto(LibraryManager.library, {
     Browser.mainLoop.scheduler();
   },
 
-  emscripten_cancel_main_loop: function(func) {
+  emscripten_cancel_main_loop: function() {
     Browser.mainLoop.scheduler = null;
     Browser.mainLoop.shouldPause = true;
   },
 
-  emscripten_pause_main_loop: function(func) {
+  emscripten_pause_main_loop: function() {
     Browser.mainLoop.pause();
   },
 
-  emscripten_resume_main_loop: function(func) {
+  emscripten_resume_main_loop: function() {
     Browser.mainLoop.resume();
+  },
+
+  _emscripten_push_main_loop_blocker: function(func, name) {
+    Browser.mainLoop.queue.push({ func: FUNCTION_TABLE[func], name: Pointer_stringify(name), counted: true });
+    Browser.mainLoop.updateStatus();
+  },
+
+  _emscripten_push_uncounted_main_loop_blocker: function(func, name) {
+    Browser.mainLoop.queue.push({ func: FUNCTION_TABLE[func], name: Pointer_stringify(name), counted: false });
+    Browser.mainLoop.updateStatus();
+  },
+
+  emscripten_set_main_loop_expected_blockers: function(num) {
+    Browser.mainLoop.expectedBlockers = num;
+    Browser.mainLoop.remainingBlockers = num;
+    Browser.mainLoop.updateStatus();
   },
 
   emscripten_async_call: function(func, millis) {

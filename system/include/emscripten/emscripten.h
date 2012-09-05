@@ -49,6 +49,47 @@ extern void emscripten_resume_main_loop();
 extern void emscripten_cancel_main_loop();
 
 /*
+ * Add a function to a queue of events that will execute
+ * before the main loop will continue. The event is pushed
+ * into the back of the queue. (Note that in the native version
+ * of this we simply execute the function, so to keep semantics
+ * identical be careful to not push while the queue is being
+ * used.)
+ *
+ * Main loop blockers block the main loop from running, and
+ * can be counted to show progress. In contrast, emscripten_async_calls
+ * are not counted, do not block the main loop, and can fire
+ * at specific time in the future.
+ */
+#if EMSCRIPTEN
+extern void _emscripten_push_main_loop_blocker(void (*func)(), const char *name);
+extern void _emscripten_push_uncounted_main_loop_blocker(void (*func)(), const char *name);
+#else
+inline void _emscripten_push_main_loop_blocker(void (*func)(), const char *name) {
+  func();
+}
+inline void _emscripten_push_uncounted_main_loop_blocker(void (*func)(), const char *name) {
+  func();
+}
+#endif
+#define emscripten_push_main_loop_blocker(func) \
+  _emscripten_push_main_loop_blocker(func, #func)
+#define emscripten_push_uncounted_main_loop_blocker(func) \
+  _emscripten_push_uncounted_main_loop_blocker(func, #func)
+
+/*
+ * Sets the number of blockers remaining until some user-relevant
+ * event. This affects how we show progress. So if you set this
+ * to 10, then push 10 blockers, as they complete the user will
+ * see x/10 and so forth.
+ */
+#if EMSCRIPTEN
+extern void emscripten_set_main_loop_expected_blockers(int num);
+#else
+inline void emscripten_set_main_loop_expected_blockers(int num) {}
+#endif
+
+/*
  * Call a C function asynchronously, that is, after returning
  * control to the JS event loop. This is done by a setTimeout.
  * When building natively this becomes a simple direct call,
@@ -61,7 +102,7 @@ extern void emscripten_cancel_main_loop();
 extern void emscripten_async_call(void (*func)(), int millis);
 #else
 inline void emscripten_async_call(void (*func)(), int millis) {
-  SDL_Delay(millis);
+  if (millis) SDL_Delay(millis);
   func();
 }
 #endif

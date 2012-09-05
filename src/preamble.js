@@ -513,17 +513,17 @@ function allocate(slab, types, allocator) {
 Module['allocate'] = allocate;
 
 function Pointer_stringify(ptr, /* optional */ length) {
+  var utf8 = new Runtime.UTF8Processor();
   var nullTerminated = typeof(length) == "undefined";
   var ret = "";
   var i = 0;
   var t;
-  var nullByte = String.fromCharCode(0);
   while (1) {
-    t = String.fromCharCode({{{ makeGetValue('ptr', 'i', 'i8', 0, 1) }}});
-    if (nullTerminated && t == nullByte) { break; } else {}
-    ret += t;
+    t = {{{ makeGetValue('ptr', 'i', 'i8', 0, 1) }}};
+    if (nullTerminated && t == 0) break;
+    ret += utf8.processCChar(t);
     i += 1;
-    if (!nullTerminated && i == length) { break; }
+    if (!nullTerminated && i == length) break;
   }
   return ret;
 }
@@ -734,22 +734,9 @@ Module['String_len'] = String_len;
 // This processes a JS string into a C-line array of numbers, 0-terminated.
 // For LLVM-originating strings, see parser.js:parseLLVMString function
 function intArrayFromString(stringy, dontAddNull, length /* optional */) {
-  var ret = [];
-  var t;
-  var i = 0;
-  if (length === undefined) {
-    length = stringy.length;
-  }
-  while (i < length) {
-    var chr = stringy.charCodeAt(i);
-    if (chr > 0xFF) {
-#if ASSERTIONS
-        assert(false, 'Character code ' + chr + ' (' + stringy[i] + ')  at offset ' + i + ' not in 0x00-0xFF.');
-#endif
-      chr &= 0xFF;
-    }
-    ret.push(chr);
-    i = i + 1;
+  var ret = (new Runtime.UTF8Processor()).processJSString(stringy);
+  if (length) {
+    ret.length = length;
   }
   if (!dontAddNull) {
     ret.push(0);
@@ -776,20 +763,12 @@ Module['intArrayToString'] = intArrayToString;
 
 // Write a Javascript array to somewhere in the heap
 function writeStringToMemory(string, buffer, dontAddNull) {
+  var array = intArrayFromString(string, dontAddNull);
   var i = 0;
-  while (i < string.length) {
-    var chr = string.charCodeAt(i);
-    if (chr > 0xFF) {
-#if ASSERTIONS
-        assert(false, 'Character code ' + chr + ' (' + string[i] + ')  at offset ' + i + ' not in 0x00-0xFF.');
-#endif
-      chr &= 0xFF;
-    }
+  while (i < array.length) {
+    var chr = array[i];
     {{{ makeSetValue('buffer', 'i', 'chr', 'i8') }}}
     i = i + 1;
-  }
-  if (!dontAddNull) {
-    {{{ makeSetValue('buffer', 'i', '0', 'i8') }}}
   }
 }
 Module['writeStringToMemory'] = writeStringToMemory;
@@ -814,21 +793,61 @@ var STRING_TABLE = [];
 // it happens right before run - run will be postponed until
 // the dependencies are met.
 var runDependencies = 0;
-function addRunDependency() {
+var runDependencyTracking = {};
+var calledRun = false;
+var runDependencyWatcher = null;
+function addRunDependency(id) {
   runDependencies++;
   if (Module['monitorRunDependencies']) {
     Module['monitorRunDependencies'](runDependencies);
   }
+  if (id) {
+    assert(!runDependencyTracking[id]);
+    runDependencyTracking[id] = 1;
+    if (runDependencyWatcher === null && typeof setInterval !== 'undefined') {
+      // Check for missing dependencies every few seconds
+      runDependencyWatcher = setInterval(function() {
+        var shown = false;
+        for (var dep in runDependencyTracking) {
+          if (!shown) {
+            shown = true;
+            Module.printErr('still waiting on run dependencies:');
+          }
+          Module.printErr('dependency: ' + dep);
+        }
+        if (shown) {
+          Module.printErr('(end of list)');
+        }
+      }, 6000);
+    }
+  } else {
+    Module.printErr('warning: run dependency added without ID');
+  }
 }
 Module['addRunDependency'] = addRunDependency;
-function removeRunDependency() {
+function removeRunDependency(id) {
   runDependencies--;
   if (Module['monitorRunDependencies']) {
     Module['monitorRunDependencies'](runDependencies);
   }
-  if (runDependencies == 0) run();
+  if (id) {
+    assert(runDependencyTracking[id]);
+    delete runDependencyTracking[id];
+  } else {
+    Module.printErr('warning: run dependency removed without ID');
+  }
+  if (runDependencies == 0) {
+    if (runDependencyWatcher !== null) {
+      clearInterval(runDependencyWatcher);
+      runDependencyWatcher = null;
+    } 
+    if (!calledRun) run();
+  }
 }
 Module['removeRunDependency'] = removeRunDependency;
+
+Module["preloadedImages"] = {}; // maps url to image data
+Module["preloadedAudios"] = {}; // maps url to audio data
 
 // === Body ===
 
