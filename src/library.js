@@ -4839,6 +4839,7 @@ LibraryManager.library = {
   // RTTI hacks for exception handling, defining type_infos for common types.
   // The values are dummies. We simply use the addresses of these statically
   // allocated variables as unique identifiers.
+  _ZTIb: [0],  // bool
   _ZTIi: [0],  // int
   _ZTIj: [0],  // unsigned int
   _ZTIl: [0],  // long
