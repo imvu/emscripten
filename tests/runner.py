@@ -2108,6 +2108,39 @@ c5,de,15,8a
         '''
         self.do_run(src, '*11,74,32,1012*\n*11*\n*22*')
 
+    def test_segfault(self):
+      if self.emcc_args is None: return self.skip('SAFE_HEAP without ta2 means we check types too, which hide segfaults')
+
+      Settings.SAFE_HEAP = 1
+
+      for addr in ['0', '7', 'new D2()']:
+        print addr
+        src = r'''
+          #include <stdio.h>
+
+          struct Classey {
+            virtual void doIt() = 0;
+          };
+
+          struct D1 : Classey {
+            virtual void doIt() { printf("fleefl\n"); }
+          };
+
+          struct D2 : Classey {
+            virtual void doIt() { printf("marfoosh\n"); }
+          };
+
+          int main(int argc, char **argv)
+          {
+            Classey *p = argc == 100 ? new D1() : (Classey*)%s;
+
+            p->doIt();
+
+            return 0;
+          }
+        ''' % addr
+        self.do_run(src, 'segmentation fault' if addr.isdigit() else 'marfoosh')
+
     def test_dynamic_cast(self):
         if self.emcc_args is None: return self.skip('need libcxxabi')
 
@@ -2434,6 +2467,30 @@ c5,de,15,8a
           }
           '''
         self.do_run(src, '*70,97,15,3,3029,90*')
+
+    def test_bigarray(self):
+      if self.emcc_args is None: return self.skip('need ta2 to compress type data on zeroinitializers')
+
+      # avoid "array initializer too large" errors
+      src = r'''
+        #include <stdio.h>
+        #include <assert.h>
+
+        #define SIZE (1024*100)
+        struct Struct {
+          char x;
+          int y;
+        };
+        Struct buffy[SIZE];
+
+        int main() {
+          for (int i = 0; i < SIZE; i++) { assert(buffy[i].x == 0 && buffy[i].y == 0); } // we were zeroinitialized
+          for (int i = 0; i < SIZE; i++) { buffy[i].x = i*i; buffy[i].y = i*i*i; } // we can save data
+          printf("*%d*\n", buffy[SIZE/3].x);
+          return 0;
+        }
+        '''
+      self.do_run(src, '*57*')
 
     def test_mod_globalstruct(self):
         src = '''
@@ -5013,11 +5070,11 @@ def process(filename):
         #include <arpa/inet.h>
 
         int main() {
-          printf("*%x,%x,%x,%x*\n", htonl(0x12345678), htons(0xabcd), ntohl(0x43211234), ntohs(0xbeaf));
+          printf("*%x,%x,%x,%x,%x,%x*\n", htonl(0xa1b2c3d4), htonl(0xfe3572e0), htonl(0x07abcdf0), htons(0xabcd), ntohl(0x43211234), ntohs(0xbeaf));
           return 0;
         }
       '''
-      self.do_run(src, '*78563412,cdab,34122143,afbe*')
+      self.do_run(src, '*d4c3b2a1,e07235fe,f0cdab07,cdab,34122143,afbe*')
 
     def test_ctype(self):
       # The bit fiddling done by the macros using __ctype_b_loc requires this.
@@ -5219,7 +5276,85 @@ int main(int argc, char **argv) {
           return 1;
         }
         ''', 'hello world');
-        
+
+    def test_typeid(self):
+      self.do_run(r'''
+        #include <stdio.h>
+        #include <string.h>
+        #include <typeinfo>
+        int main() {
+          printf("*\n");
+          #define MAX 100
+          int ptrs[MAX];
+          int groups[MAX];
+          memset(ptrs, 0, MAX*sizeof(int));
+          memset(groups, 0, MAX*sizeof(int));
+          int next_group = 1;
+          #define TEST(X) { \
+            int ptr = (int)&typeid(X); \
+            int group = 0; \
+            int i; \
+            for (i = 0; i < MAX; i++) { \
+              if (!groups[i]) break; \
+              if (ptrs[i] == ptr) { \
+                group = groups[i]; \
+                break; \
+              } \
+            } \
+            if (!group) { \
+              groups[i] = group = next_group++; \
+              ptrs[i] = ptr; \
+            } \
+            printf("%s:%d\n", #X, group); \
+          }
+          TEST(int);
+          TEST(unsigned int);
+          TEST(unsigned);
+          TEST(signed int);
+          TEST(long);
+          TEST(unsigned long);
+          TEST(signed long);
+          TEST(long long);
+          TEST(unsigned long long);
+          TEST(signed long long);
+          TEST(short);
+          TEST(unsigned short);
+          TEST(signed short);
+          TEST(char);
+          TEST(unsigned char);
+          TEST(signed char);
+          TEST(float);
+          TEST(double);
+          TEST(long double);
+          TEST(void);
+          TEST(void*);
+          printf("*\n");
+        }
+        ''', '''*
+int:1
+unsigned int:2
+unsigned:2
+signed int:1
+long:3
+unsigned long:4
+signed long:3
+long long:5
+unsigned long long:6
+signed long long:5
+short:7
+unsigned short:8
+signed short:7
+char:9
+unsigned char:10
+signed char:11
+float:12
+double:13
+long double:14
+void:15
+void*:16
+*
+''');
+
     def test_static_variable(self):
       if self.emcc_args is None: Settings.SAFE_HEAP = 0 # LLVM mixes i64 and i8 in the guard check
       src = '''
@@ -7442,6 +7577,9 @@ f.close()
          ['simplifyExpressionsPre', 'optimizeShiftsConservative']),
         (path_from_root('tools', 'test-js-optimizer-t2.js'), open(path_from_root('tools', 'test-js-optimizer-t2-output.js')).read(),
          ['simplifyExpressionsPre', 'optimizeShiftsAggressive']),
+        # Make sure that optimizeShifts handles functions with shift statements.
+        (path_from_root('tools', 'test-js-optimizer-t3.js'), open(path_from_root('tools', 'test-js-optimizer-t3.js')).read(),
+         ['optimizeShiftsAggressive']),
         (path_from_root('tools', 'test-js-optimizer-regs.js'), open(path_from_root('tools', 'test-js-optimizer-regs-output.js')).read(),
          ['registerize']),
       ]:
@@ -7649,15 +7787,17 @@ elif 'browser' in str(sys.argv):
         print '(moving on..)'
 
     def with_report_result(self, code):
-      return code.replace('REPORT_RESULT();', '''
-          char output[1000];
-          sprintf(output, 
-                  "xhr = new XMLHttpRequest();"
-                  "xhr.open('GET', 'http://localhost:8888/report_result?%d');"
-                  "xhr.send();", result);
-          emscripten_run_script(output);
+      return '''
+        #define REPORT_RESULT_INTERNAL(sync) \
+          char output[1000]; \
+          sprintf(output, \
+                  "xhr = new XMLHttpRequest();" \
+                  "xhr.open('GET', 'http://localhost:8888/report_result?%d'%s);" \
+                  "xhr.send();", result, sync ? ", false" : ""); \
+          emscripten_run_script(output); \
           emscripten_run_script("setTimeout(function() { window.close() }, 1000)");
-''')
+        #define REPORT_RESULT() REPORT_RESULT_INTERNAL(0)
+''' + code
 
     def reftest(self, expected):
       basename = os.path.basename(expected)
@@ -7689,11 +7829,13 @@ elif 'browser' in str(sys.argv):
               var actual = actualCtx.getImageData(0, 0, actualImage.width, actualImage.height).data;
 
               var total = 0;
-              for (var x = 0; x < img.width; x++) {
-                for (var y = 0; y < img.height; y++) {
-                  total += Math.abs(expected[y*img.width*4 + x*4 + 0] - actual[y*img.width*4 + x*4 + 0]);
-                  total += Math.abs(expected[y*img.width*4 + x*4 + 1] - actual[y*img.width*4 + x*4 + 1]);
-                  total += Math.abs(expected[y*img.width*4 + x*4 + 2] - actual[y*img.width*4 + x*4 + 2]);
+              var width = img.width;
+              var height = img.height;
+              for (var x = 0; x < width; x++) {
+                for (var y = 0; y < height; y++) {
+                  total += Math.abs(expected[y*width*4 + x*4 + 0] - actual[y*width*4 + x*4 + 0]);
+                  total += Math.abs(expected[y*width*4 + x*4 + 1] - actual[y*width*4 + x*4 + 1]);
+                  total += Math.abs(expected[y*width*4 + x*4 + 2] - actual[y*width*4 + x*4 + 2]);
                 }
               }
               var wrong = Math.floor(total / (img.width*img.height*3)); // floor, to allow some margin of error for antialiasing
@@ -8156,6 +8298,9 @@ elif 'browser' in str(sys.argv):
     def test_emscripten_fs_api(self):
       shutil.copyfile(path_from_root('tests', 'screenshot.png'), os.path.join(self.get_dir(), 'screenshot.png')) # preloaded *after* run
       self.btest('emscripten_fs_api_browser.cpp', '1')
+
+    def test_sdl_quit(self):
+      self.btest('sdl_quit.c', '1')
 
     def test_gc(self):
       self.btest('browser_gc.cpp', '1')
@@ -8662,7 +8807,7 @@ elif 'sanity' in str(sys.argv):
         assert (open(CONFIG_FILE).read() == open(path_from_root('settings.py')).read()), 'Settings should be copied from settings.py'
 
         # Second run, with bad EM_CONFIG
-        for settings in ['blah', 'LLVM_ROOT="blah"; JS_ENGINES=[]; COMPILER_ENGINE=NODE_JS=SPIDERMONKEY_ENGINE=[]']:
+        for settings in ['blah', 'LLVM_ROOT="blarg"; JS_ENGINES=[]; COMPILER_ENGINE=NODE_JS=SPIDERMONKEY_ENGINE=[]']:
           f = open(CONFIG_FILE, 'w')
           f.write(settings)
           f.close()
@@ -8758,6 +8903,15 @@ elif 'sanity' in str(sys.argv):
       self.assertNotContained(SANITY_MESSAGE, output)
       self.assertNotContained(SANITY_FAIL_MESSAGE, output)
 
+      # but with EMCC_DEBUG=1 we should check
+      assert not os.environ.get('EMCC_DEBUG'), 'do not run sanity checks in debug mode!'
+      os.environ['EMCC_DEBUG'] = '1'
+      output = self.check_working(EMCC)
+      self.assertContained(SANITY_MESSAGE, output)
+      del os.environ['EMCC_DEBUG']
+      output = self.check_working(EMCC)
+      self.assertNotContained(SANITY_MESSAGE, output)
+
       # But the test runner should
       output = self.check_working(commands[1])
       self.assertContained(SANITY_MESSAGE, output)
@@ -8798,6 +8952,7 @@ elif 'sanity' in str(sys.argv):
     def test_emcc_caching(self):
       INCLUDING_MESSAGE = 'emcc: including X'
       BUILDING_MESSAGE = 'emcc: building X for cache'
+      ERASING_MESSAGE = 'emcc: clearing cache'
 
       EMCC_CACHE = Cache.dirname
 
@@ -8844,6 +8999,12 @@ elif 'sanity' in str(sys.argv):
       finally:
         if emcc_debug:
           os.environ['EMCC_DEBUG'] = emcc_debug
+
+      # Manual cache clearing
+      assert os.path.exists(EMCC_CACHE)
+      output = self.do([EMCC, '--clear-cache'])
+      assert ERASING_MESSAGE in output
+      assert not os.path.exists(EMCC_CACHE)
 
 else:
   raise Exception('Test runner is confused: ' + str(sys.argv))

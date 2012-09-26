@@ -10,10 +10,6 @@ mergeInto(LibraryManager.library, {
   $Browser: {
     mainLoop: {
       scheduler: null,
-#if PROFILE_MAIN_LOOP
-      meanTime: 0,
-      lastReport: 0,
-#endif
       shouldPause: false,
       paused: false,
       queue: [],
@@ -384,11 +380,11 @@ mergeInto(LibraryManager.library, {
     Module['noExitRuntime'] = true;
 
     var jsFunc = FUNCTION_TABLE[func];
-    var wrapper = function() {
+    Browser.mainLoop.runner = function() {
       if (Browser.mainLoop.queue.length > 0) {
         var start = Date.now();
         var blocker = Browser.mainLoop.queue.shift();
-        blocker.func();
+        blocker.func(blocker.arg);
         if (Browser.mainLoop.remainingBlockers) {
           var remaining = Browser.mainLoop.remainingBlockers;
           var next = remaining%1 == 0 ? remaining-1 : Math.floor(remaining);
@@ -402,7 +398,7 @@ mergeInto(LibraryManager.library, {
         }
         console.log('main loop blocker "' + blocker.name + '" took ' + (Date.now() - start) + ' ms'); //, left: ' + Browser.mainLoop.remainingBlockers);
         Browser.mainLoop.updateStatus();
-        setTimeout(wrapper, 0);
+        setTimeout(Browser.mainLoop.runner, 0);
         return;
       }
       if (Browser.mainLoop.shouldPause) {
@@ -412,19 +408,15 @@ mergeInto(LibraryManager.library, {
         return;
       }
 
-#if PROFILE_MAIN_LOOP
-      var start = performance.now();
-#endif
-      jsFunc();
-#if PROFILE_MAIN_LOOP
-      var now = performance.now();
-      var time = now - start;
-      Browser.mainLoop.meanTime = (Browser.mainLoop.meanTime*9 + time)/10;
-      if (now - Browser.mainLoop.lastReport > 1000) {
-        console.log('main loop time: ' + Browser.mainLoop.meanTime);
-        Browser.mainLoop.lastReport = now;
+      if (Module['preMainLoop']) {
+        Module['preMainLoop']();
       }
-#endif
+
+      jsFunc();
+
+      if (Module['postMainLoop']) {
+        Module['postMainLoop']();
+      }
 
       if (Browser.mainLoop.shouldPause) {
         // catch pauses from the main loop itself
@@ -436,11 +428,11 @@ mergeInto(LibraryManager.library, {
     }
     if (fps && fps > 0) {
       Browser.mainLoop.scheduler = function() {
-        setTimeout(wrapper, 1000/fps); // doing this each time means that on exception, we stop
+        setTimeout(Browser.mainLoop.runner, 1000/fps); // doing this each time means that on exception, we stop
       }
     } else {
       Browser.mainLoop.scheduler = function() {
-        Browser.requestAnimationFrame(wrapper);
+        Browser.requestAnimationFrame(Browser.mainLoop.runner);
       }
     }
     Browser.mainLoop.scheduler();
@@ -459,13 +451,13 @@ mergeInto(LibraryManager.library, {
     Browser.mainLoop.resume();
   },
 
-  _emscripten_push_main_loop_blocker: function(func, name) {
-    Browser.mainLoop.queue.push({ func: FUNCTION_TABLE[func], name: Pointer_stringify(name), counted: true });
+  _emscripten_push_main_loop_blocker: function(func, arg, name) {
+    Browser.mainLoop.queue.push({ func: FUNCTION_TABLE[func], arg: arg, name: Pointer_stringify(name), counted: true });
     Browser.mainLoop.updateStatus();
   },
 
-  _emscripten_push_uncounted_main_loop_blocker: function(func, name) {
-    Browser.mainLoop.queue.push({ func: FUNCTION_TABLE[func], name: Pointer_stringify(name), counted: false });
+  _emscripten_push_uncounted_main_loop_blocker: function(func, arg, name) {
+    Browser.mainLoop.queue.push({ func: FUNCTION_TABLE[func], arg: arg, name: Pointer_stringify(name), counted: false });
     Browser.mainLoop.updateStatus();
   },
 
@@ -475,14 +467,17 @@ mergeInto(LibraryManager.library, {
     Browser.mainLoop.updateStatus();
   },
 
-  emscripten_async_call: function(func, millis) {
+  emscripten_async_call: function(func, arg, millis) {
     Module['noExitRuntime'] = true;
 
-    var asyncCall = Runtime.getFuncWrapper(func);
+    function wrapper() {
+      Runtime.getFuncWrapper(func)(arg);
+    }
+
     if (millis >= 0) {
-      setTimeout(asyncCall, millis);
+      setTimeout(wrapper, millis);
     } else {
-      Browser.requestAnimationFrame(asyncCall);
+      Browser.requestAnimationFrame(wrapper);
     }
   },
 

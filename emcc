@@ -110,7 +110,7 @@ if DEBUG and LEAVE_INPUTS_RAW: print >> sys.stderr, 'emcc: leaving inputs raw'
 stdout = PIPE if not DEBUG else None # suppress output of child processes
 stderr = PIPE if not DEBUG else None # unless we are in DEBUG mode
 
-shared.check_sanity()
+shared.check_sanity(force=DEBUG)
 
 # Handle some global flags
 
@@ -285,6 +285,17 @@ Options that are modified or new in %s include:
                            llvm-link's behavior is not as permissive
                            as ld is.
 
+  --clear-cache            Manually clears the cache of compiled
+                           emscripten system libraries (libc++,
+                           libc++abi, dlmalloc). This is normally
+                           handled automatically, but if you update
+                           llvm in-place (instead of having a different
+                           directory for a new version), the caching
+                           mechanism can get confused. Clearing the
+                           cache can fix weird problems related to
+                           cache incompatibilities, like clang failing
+                           to link with library files.
+
 The target file, if specified (-o <target>), defines what will
 be generated:
 
@@ -403,7 +414,10 @@ if TEMP_DIR:
     shutil.rmtree(temp_dir) # clear it
   os.makedirs(temp_dir)
 else:
-  temp_dir = tempfile.mkdtemp()
+  temp_root = os.path.join(shared.TEMP_DIR, 'emcc')
+  if not os.path.exists(temp_root):
+    os.makedirs(temp_root)
+  temp_dir = tempfile.mkdtemp(dir=temp_root)
 
 def in_temp(name):
   return os.path.join(temp_dir, os.path.basename(name))
@@ -519,6 +533,10 @@ try:
     elif newargs[i] == '--remove-duplicates':
       remove_duplicates = True
       newargs[i] = ''
+    elif newargs[i] == '--clear-cache':
+      newargs[i] = ''
+      print >> sys.stderr, 'emcc: clearing cache'
+      shared.Cache.erase()
     elif newargs[i].startswith(('-I/', '-L/')):
       print >> sys.stderr, 'emcc: warning: -I or -L of an absolute path encountered. If this is to a local system header/library, it may cause problems (local system files make sense for compiling natively on your system, but not necessarily to JavaScript)' # Of course an absolute path to a non-system-specific library or header is fine, and you can ignore this warning. The danger are system headers that are e.g. x86 specific and nonportable. The emscripten bundled headers are modified to be portable, local system ones are generally not
   newargs = [ arg for arg in newargs if arg is not '' ]

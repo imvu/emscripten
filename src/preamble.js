@@ -24,6 +24,8 @@ var ACCEPTABLE_SAFE_HEAP_ERRORS = 0;
 function SAFE_HEAP_ACCESS(dest, type, store, ignore) {
   //if (dest === A_NUMBER) Module.print ([dest, type, store] + ' ' + new Error().stack); // Something like this may be useful, in debugging
 
+  assert(dest >= STACK_ROOT, 'segmentation fault: null pointer, or below normal memory');
+
 #if USE_TYPED_ARRAYS
   // When using typed arrays, reads over the top of TOTAL_MEMORY will fail silently, so we must
   // correct that by growing TOTAL_MEMORY as needed. Without typed arrays, memory is a normal
@@ -455,8 +457,6 @@ function getValue(ptr, type, noSafe) {
 }
 Module['getValue'] = getValue;
 
-// Allocates memory for some data and initializes it properly.
-
 var ALLOC_NORMAL = 0; // Tries to use _malloc()
 var ALLOC_STACK = 1; // Lives for the duration of the current function call
 var ALLOC_STATIC = 2; // Cannot be freed
@@ -464,6 +464,19 @@ Module['ALLOC_NORMAL'] = ALLOC_NORMAL;
 Module['ALLOC_STACK'] = ALLOC_STACK;
 Module['ALLOC_STATIC'] = ALLOC_STATIC;
 
+// allocate(): This is for internal use. You can use it yourself as well, but the interface
+//             is a little tricky (see docs right below). The reason is that it is optimized
+//             for multiple syntaxes to save space in generated code. So you should
+//             normally not use allocate(), and instead allocate memory using _malloc(),
+//             initialize it with setValue(), and so forth.
+// @slab: An array of data, or a number. If a number, then the size of the block to allocate,
+//        in *bytes* (note that this is sometimes confusing: the next parameter does not
+//        affect this!)
+// @types: Either an array of types, one for each byte (or 0 if no type at that position),
+//         or a single type which is used for the entire block. This only matters if there
+//         is initial data - if @slab is a number, then this does not matter at all and is
+//         ignored.
+// @allocator: How to allocate memory, see ALLOC_*
 function allocate(slab, types, allocator) {
   var zeroinit, size;
   if (typeof slab === 'number') {
@@ -639,13 +652,6 @@ var FAST_MEMORY = Module['FAST_MEMORY'] || {{{ FAST_MEMORY }}};
   }
 #endif
 
-var base = intArrayFromString('(null)'); // So printing %s of NULL gives '(null)'
-                                         // Also this ensures we leave 0 as an invalid address, 'NULL'
-STATICTOP = base.length;
-for (var i = 0; i < base.length; i++) {
-  {{{ makeSetValue(0, 'i', 'base[i]', 'i8') }}}
-}
-
 Module['HEAP'] = HEAP;
 #if USE_TYPED_ARRAYS == 1
 Module['IHEAP'] = IHEAP;
@@ -664,7 +670,7 @@ Module['HEAPF32'] = HEAPF32;
 Module['HEAPF64'] = HEAPF64;
 #endif
 
-STACK_ROOT = STACKTOP = Runtime.alignMemory(STATICTOP);
+STACK_ROOT = STACKTOP = Runtime.alignMemory(1);
 STACK_MAX = STACK_ROOT + TOTAL_STACK;
 
 #if USE_TYPED_ARRAYS == 2
@@ -693,6 +699,8 @@ STACK_MAX = tempDoublePtr + 8;
 #endif
 
 STATICTOP = alignMemoryPage(STACK_MAX);
+
+var nullString = allocate(intArrayFromString('(null)'), 'i8', ALLOC_STATIC);
 
 function callRuntimeCallbacks(callbacks) {
   while(callbacks.length > 0) {
@@ -723,9 +731,9 @@ function exitRuntime() {
 }
 
 function String_len(ptr) {
-  var i = 0;
-  while ({{{ makeGetValue('ptr', 'i', 'i8') }}}) i++; // Note: should be |!= 0|, technically. But this helps catch bugs with undefineds
-  return i;
+  var i = ptr;
+  while ({{{ makeGetValue('i++', '0', 'i8') }}}) {}; // Note: should be |!= 0|, technically. But this helps catch bugs with undefineds
+  return i - ptr - 1;
 }
 Module['String_len'] = String_len;
 
