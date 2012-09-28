@@ -8630,7 +8630,7 @@ elif 'browser' in str(sys.argv):
       ''')
       self.btest('pre_run_deps.cpp', expected='10', args=['--pre-js', 'pre.js'])
 
-    def zzztest_websockets(self):
+    def test_websockets(self):
       try:
         def server_func():
           os.system('while true; do (/bin/echo -en "te\x01\xff\x79st\x02" ; sleep 1000) | nc -vvvl 127.0.0.1 8990; done;') # sleep to work around websockify issue 63
@@ -8646,7 +8646,7 @@ elif 'browser' in str(sys.argv):
         websockify.start()
         print '[Websockify on process %d]' % websockify.pid
 
-        self.btest('websockets.c', expected='fleefl')
+        self.btest('websockets.c', expected='571')
 
       finally:
         try:
