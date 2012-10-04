@@ -18,56 +18,56 @@ namespace emscripten {
                 const char* payload) __attribute__((noreturn));
 
             void _embind_register_void(
-                TypeID voidType,
+                TYPEID voidType,
                 const char* name);
 
             void _embind_register_bool(
-                TypeID boolType,
+                TYPEID boolType,
                 const char* name,
                 bool trueValue,
                 bool falseValue);
 
             void _embind_register_integer(
-                TypeID integerType,
+                TYPEID integerType,
                 const char* name);
 
             void _embind_register_float(
-                TypeID floatType,
+                TYPEID floatType,
                 const char* name);
             
             void _embind_register_cstring(
-                TypeID stringType,
+                TYPEID stringType,
                 const char* name);
 
             void _embind_register_emval(
-                TypeID emvalType,
+                TYPEID emvalType,
                 const char* name);
 
             void _embind_register_function(
                 const char* name,
-                TypeID returnType,
+                TYPEID returnType,
                 unsigned argCount,
-                TypeID argTypes[],
+                TYPEID argTypes[],
                 GenericFunction invoker,
                 GenericFunction function);
 
             void _embind_register_tuple(
-                TypeID tupleType,
+                TYPEID tupleType,
                 const char* name,
                 GenericFunction constructor,
                 GenericFunction destructor);
             
             void _embind_register_tuple_element(
-                TypeID tupleType,
-                TypeID elementType,
+                TYPEID tupleType,
+                TYPEID elementType,
                 GenericFunction getter,
                 GenericFunction setter,
                 size_t memberPointerSize,
                 void* memberPointer);
 
             void _embind_register_tuple_element_accessor(
-                TypeID tupleType,
-                TypeID elementType,
+                TYPEID tupleType,
+                TYPEID elementType,
                 GenericFunction staticGetter,
                 size_t getterSize,
                 void* getter,
@@ -76,69 +76,69 @@ namespace emscripten {
                 void* setter);
 
             void _embind_register_struct(
-                TypeID structType,
+                TYPEID structType,
                 const char* name,
                 GenericFunction constructor,
                 GenericFunction destructor);
             
             void _embind_register_struct_field(
-                TypeID structType,
+                TYPEID structType,
                 const char* name,
-                TypeID fieldType,
+                TYPEID fieldType,
                 GenericFunction getter,
                 GenericFunction setter,
                 size_t memberPointerSize,
                 void* memberPointer);
 
             void _embind_register_class(
-                TypeID classType,
+                TYPEID classType,
                 const char* className,
                 GenericFunction destructor);
 
             void _embind_register_class_constructor(
-                TypeID classType,
+                TYPEID classType,
                 unsigned argCount,
-                TypeID argTypes[],
+                TYPEID argTypes[],
                 GenericFunction constructor);
 
             void _embind_register_class_method(
-                TypeID classType,
+                TYPEID classType,
                 const char* methodName,
-                TypeID returnType,
+                TYPEID returnType,
                 unsigned argCount,
-                TypeID argTypes[],
+                TYPEID argTypes[],
                 GenericFunction invoker,
                 size_t memberFunctionSize,
                 void* memberFunction);
 
             void _embind_register_class_field(
-                TypeID classType,
+                TYPEID classType,
                 const char* fieldName,
-                TypeID fieldType,
+                TYPEID fieldType,
                 GenericFunction getter,
                 GenericFunction setter,
                 size_t memberPointerSize,
                 void* memberPointer);
 
             void _embind_register_class_classmethod(
-                TypeID classType,
+                TYPEID classType,
                 const char* methodName,
-                TypeID returnType,
+                TYPEID returnType,
                 unsigned argCount,
-                TypeID argTypes[],
+                TYPEID argTypes[],
                 GenericFunction method);
 
             void _embind_register_enum(
-                TypeID enumType,
+                TYPEID enumType,
                 const char* name);
 
             void _embind_register_enum_value(
-                TypeID enumType,
+                TYPEID enumType,
                 const char* valueName,
                 GenericEnumValue value);
 
             void _embind_register_interface(
-                TypeID interfaceType,
+                TYPEID interfaceType,
                 const char* name,
                 GenericFunction constructor,
                 GenericFunction destructor);
@@ -192,7 +192,7 @@ namespace emscripten {
         internal::ArgTypeList<Args...> args;
         internal::_embind_register_function(
             name,
-            internal::getTypeID<ReturnType>(),
+            internal::TypeID<ReturnType>::get(),
             args.count,
             args.types,
             reinterpret_cast<internal::GenericFunction>(&internal::Invoker<ReturnType, Args...>::invoke),
@@ -320,7 +320,7 @@ namespace emscripten {
         value_tuple(const char* name) {
             internal::registerStandardTypes();
             internal::_embind_register_tuple(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 name,
                 reinterpret_cast<internal::GenericFunction>(&internal::raw_constructor<ClassType>),
                 reinterpret_cast<internal::GenericFunction>(&internal::raw_destructor<ClassType>));
@@ -329,8 +329,8 @@ namespace emscripten {
         template<typename ElementType>
         value_tuple& element(ElementType ClassType::*field) {
             internal::_embind_register_tuple_element(
-                internal::getTypeID<ClassType>(),
-                internal::getTypeID<ElementType>(),
+                internal::TypeID<ClassType>::get(),
+                internal::TypeID<ElementType>::get(),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, ElementType>::get),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, ElementType>::set),
                 sizeof(field),
@@ -342,8 +342,8 @@ namespace emscripten {
         template<typename ElementType>
         value_tuple& element(ElementType (*getter)(const ClassType&), void (*setter)(ClassType&, ElementType)) {
             internal::_embind_register_tuple_element_accessor(
-                internal::getTypeID<ClassType>(),
-                internal::getTypeID<ElementType>(),
+                internal::TypeID<ClassType>::get(),
+                internal::TypeID<ElementType>::get(),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, ElementType>::template propertyGet<ElementType(const ClassType&)>),
                 sizeof(getter),
                 &getter,
@@ -356,8 +356,8 @@ namespace emscripten {
         template<typename ElementType>
         value_tuple& element(ElementType (*getter)(const ClassType&), void (*setter)(ClassType&, const ElementType&)) {
             internal::_embind_register_tuple_element_accessor(
-                internal::getTypeID<ClassType>(),
-                internal::getTypeID<ElementType>(),
+                internal::TypeID<ClassType>::get(),
+                internal::TypeID<ElementType>::get(),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, ElementType>::template propertyGet<ElementType(const ClassType&)>),
                 sizeof(getter),
                 &getter,
@@ -370,8 +370,8 @@ namespace emscripten {
         template<typename ElementType>
         value_tuple& element(ElementType (*getter)(const ClassType&), void (*setter)(ClassType&, const ElementType&&)) {
             internal::_embind_register_tuple_element_accessor(
-                internal::getTypeID<ClassType>(),
-                internal::getTypeID<ElementType>(),
+                internal::TypeID<ClassType>::get(),
+                internal::TypeID<ElementType>::get(),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, ElementType>::template propertyGet<ElementType(const ClassType&)>),
                 sizeof(getter),
                 &getter,
@@ -384,8 +384,8 @@ namespace emscripten {
         template<typename ElementType>
         value_tuple& element(ElementType (*getter)(const ClassType&), void (*setter)(ClassType&, ElementType&)) {
             internal::_embind_register_tuple_element_accessor(
-                internal::getTypeID<ClassType>(),
-                internal::getTypeID<ElementType>(),
+                internal::TypeID<ClassType>::get(),
+                internal::TypeID<ElementType>::get(),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, ElementType>::template propertyGet<ElementType(const ClassType&)>),
                 sizeof(getter),
                 &getter,
@@ -402,7 +402,7 @@ namespace emscripten {
         value_struct(const char* name) {
             internal::registerStandardTypes();
             internal::_embind_register_struct(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 name,
                 reinterpret_cast<internal::GenericFunction>(&internal::raw_constructor<ClassType>),
                 reinterpret_cast<internal::GenericFunction>(&internal::raw_destructor<ClassType>));
@@ -411,9 +411,9 @@ namespace emscripten {
         template<typename FieldType>
         value_struct& field(const char* fieldName, FieldType ClassType::*field) {
             internal::_embind_register_struct_field(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 fieldName,
-                internal::getTypeID<FieldType>(),
+                internal::TypeID<FieldType>::get(),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, FieldType>::get),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, FieldType>::set),
                 sizeof(field),
@@ -431,7 +431,7 @@ namespace emscripten {
         class_(const char* name) {
             internal::registerStandardTypes();
             internal::_embind_register_class(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 name,
                 reinterpret_cast<internal::GenericFunction>(&internal::raw_destructor<ClassType>));
         }
@@ -440,7 +440,7 @@ namespace emscripten {
         class_& constructor() {
             internal::ArgTypeList<ConstructorArgs...> args;
             internal::_embind_register_class_constructor(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<internal::GenericFunction>(&internal::raw_constructor<ClassType, ConstructorArgs...>));
@@ -450,9 +450,9 @@ namespace emscripten {
         class_& method(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...)) {
             internal::ArgTypeList<Args...> args;
             internal::_embind_register_class_method(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 methodName,
-                internal::getTypeID<ReturnType>(),
+                internal::TypeID<ReturnType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<internal::GenericFunction>(&internal::MethodInvoker<ClassType, ReturnType, Args...>::invoke),
@@ -465,9 +465,9 @@ namespace emscripten {
         class_& method(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...) const) {
             internal::ArgTypeList<Args...> args;
             internal::_embind_register_class_method(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 methodName,
-                internal::getTypeID<ReturnType>(),
+                internal::TypeID<ReturnType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<internal::GenericFunction>(&internal::ConstMethodInvoker<ClassType, ReturnType, Args...>::invoke),
@@ -479,9 +479,9 @@ namespace emscripten {
         template<typename FieldType>
         class_& field(const char* fieldName, FieldType ClassType::*field) {
             internal::_embind_register_class_field(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 fieldName,
-                internal::getTypeID<FieldType>(),
+                internal::TypeID<FieldType>::get(),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, FieldType>::get),
                 reinterpret_cast<internal::GenericFunction>(&internal::FieldAccess<ClassType, FieldType>::set),
                 sizeof(field),
@@ -493,9 +493,9 @@ namespace emscripten {
         class_& classmethod(const char* methodName, ReturnType (*classMethod)(Args...)) {
             internal::ArgTypeList<Args...> args;
             internal::_embind_register_class_classmethod(
-                internal::getTypeID<ClassType>(),
+                internal::TypeID<ClassType>::get(),
                 methodName,
-                internal::getTypeID<ReturnType>(),
+                internal::TypeID<ReturnType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<internal::GenericFunction>(classMethod));
@@ -508,7 +508,7 @@ namespace emscripten {
     public:
         enum_(const char* name) {
             _embind_register_enum(
-                internal::getTypeID<EnumType>(),
+                internal::TypeID<EnumType>::get(),
                 name);
         }
 
@@ -518,7 +518,7 @@ namespace emscripten {
             static_assert(sizeof(value) <= sizeof(internal::GenericEnumValue), "enum type must fit in a GenericEnumValue");
 
             _embind_register_enum_value(
-                internal::getTypeID<EnumType>(),
+                internal::TypeID<EnumType>::get(),
                 name,
                 static_cast<internal::GenericEnumValue>(value));
             return *this;
@@ -634,7 +634,7 @@ namespace emscripten {
 
         interface(const char* name) {
             _embind_register_interface(
-                internal::getTypeID<InterfaceType>(),
+                internal::TypeID<InterfaceType>::get(),
                 name,
                 reinterpret_cast<internal::GenericFunction>(&internal::create_interface_wrapper<WrapperType>),
                 reinterpret_cast<internal::GenericFunction>(&internal::raw_destructor<WrapperType>));
