@@ -185,6 +185,9 @@ namespace emscripten {
             static std::string fromWireType(char* v) {
                 return std::string(v);
             }
+            static void destroy(WireType v) {
+                free(v);
+            }
         };
 
         template<typename T>
@@ -204,6 +207,24 @@ namespace emscripten {
 
             static T* fromWireType(WireType wt) {
                 return wt;
+            }
+        };
+
+        template<typename T>
+        struct BindingType<std::shared_ptr<T>> {
+            typedef std::shared_ptr<T> shared_ptr;
+            typedef std::shared_ptr<T>* WireType;
+
+            static WireType toWireType(shared_ptr p) {
+                return new shared_ptr(p);
+            }
+
+            static shared_ptr fromWireType(WireType wt) {
+                if (wt) {
+                    return shared_ptr(*wt);
+                } else {
+                    return shared_ptr();
+                }
             }
         };
 
