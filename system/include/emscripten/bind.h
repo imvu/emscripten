@@ -47,7 +47,6 @@ namespace emscripten {
 
             void _embind_register_function(
                 const char* name,
-                TYPEID returnType,
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker,
@@ -125,7 +124,6 @@ namespace emscripten {
             void _embind_register_class_method(
                 TYPEID classType,
                 const char* methodName,
-                TYPEID returnType,
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker,
@@ -156,7 +154,6 @@ namespace emscripten {
             void _embind_register_class_classmethod(
                 TYPEID classType,
                 const char* methodName,
-                TYPEID returnType,
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker,
@@ -164,7 +161,6 @@ namespace emscripten {
 
             void _embind_register_class_operator_call(
                 TYPEID classType,
-                TYPEID returnType,
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker
@@ -205,7 +201,11 @@ namespace emscripten {
 
     template<int Index>
     struct arg {
-        static constexpr int index = Index;
+        static constexpr int index = Index + 1;
+    };
+
+    struct ret_val {
+        static constexpr int index = 0;
     };
 
     template<typename Slot>
@@ -281,10 +281,9 @@ namespace emscripten {
 
         registerStandardTypes();
 
-        typename WithPolicies<Policies...>::template ArgTypeList<Args...> args;
+        typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, Args...> args;
         _embind_register_function(
             name,
-            TypeID<ReturnType>::get(),
             args.count,
             args.types,
             reinterpret_cast<GenericFunction>(&Invoker<ReturnType, Args...>::invoke),
@@ -660,7 +659,7 @@ namespace emscripten {
         class_& constructor(Policies...) {
             using namespace internal;
 
-            typename WithPolicies<Policies...>::template ArgTypeList<ConstructorArgs...> args;
+            typename WithPolicies<Policies...>::template ArgTypeList<void, ConstructorArgs...> args;
             _embind_register_class_constructor(
                 TypeID<ClassType>::get(),
                 args.count,
@@ -672,11 +671,10 @@ namespace emscripten {
         class_& method(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...), Policies...) {
             using namespace internal;
 
-            typename WithPolicies<Policies...>::template ArgTypeList<Args...> args;
+            typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, Args...> args;
             _embind_register_class_method(
                 TypeID<ClassType>::get(),
                 methodName,
-                TypeID<ReturnType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<GenericFunction>(&MethodInvoker<ClassType, ReturnType, Args...>::invoke),
@@ -689,11 +687,10 @@ namespace emscripten {
         class_& method(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...) const, Policies...) {
             using namespace internal;
 
-            typename WithPolicies<Policies...>::template ArgTypeList<Args...> args;
+            typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, Args...> args;
             _embind_register_class_method(
                 TypeID<ClassType>::get(),
                 methodName,
-                TypeID<ReturnType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<GenericFunction>(&ConstMethodInvoker<ClassType, ReturnType, Args...>::invoke),
@@ -721,11 +718,10 @@ namespace emscripten {
         class_& classmethod(const char* methodName, ReturnType (*classMethod)(Args...), Policies...) {
             using namespace internal;
 
-            typename WithPolicies<Policies...>::template ArgTypeList<Args...> args;
+            typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, Args...> args;
             _embind_register_class_classmethod(
                 TypeID<ClassType>::get(),
                 methodName,
-                TypeID<ReturnType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<internal::GenericFunction>(&internal::Invoker<ReturnType, Args...>::invoke),
@@ -737,10 +733,9 @@ namespace emscripten {
         class_& calloperator(Policies...) {
             using namespace internal;
 
-            typename WithPolicies<Policies...>::template ArgTypeList<Args...> args;
+            typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, Args...> args;
             _embind_register_class_operator_call(
                 TypeID<ClassType>::get(),
-                TypeID<ReturnType>::get(),
                 args.count,
                 args.types,
                 reinterpret_cast<internal::GenericFunction>(&internal::FunctorInvoker<ClassType, ReturnType, Args...>::invoke));
