@@ -433,66 +433,6 @@ function __embind_register_smart_ptr(
     });
 }
 
-function __embind_register_vector(
-    vectorType,
-    elementType,
-    name,
-    constructor,
-    destructor,
-    length,
-    getter,
-    setter
-) {
-    name = Pointer_stringify(name);
-    elementType = requireRegisteredType(elementType, 'vector ' + name);
-    
-    constructor = FUNCTION_TABLE[constructor];
-    destructor = FUNCTION_TABLE[destructor];
-    length = FUNCTION_TABLE[length];
-    getter = FUNCTION_TABLE[getter];
-    setter = FUNCTION_TABLE[setter];
-
-    registerType(vectorType, name, {
-        name: name,
-        fromWireType: function(ptr) {
-            var arr = [];
-            Object.defineProperty(arr, 'delete', {
-                writable: false,
-                enumerable: false,
-                configurable: false,
-                value: function() {
-                    var needsToBeDeleted = elementType.hasOwnProperty('Handle');
-                    for (var i = 0; i < arr.length; i++) {
-                        if (needsToBeDeleted) {
-                            arr[i].delete();
-                        }
-                    }
-                }
-            });
-
-            var n = length(ptr);
-            for (var i = 0; i < n; i++) {
-                var v = elementType.fromWireType(getter(ptr, i));
-                arr.push(v);
-            }
-
-            destructor(ptr);
-            return arr;
-        },
-        toWireType: function(destructors, o) {
-            var vec = constructor();
-            for (var val in o) {
-                setter(vec, elementType.toWireType(destructors, o[val]));
-            }
-            runDestructors(destructors);
-
-            destructors.push(destructor);
-            destructors.push(vec);
-            return vec;
-        }
-    });
-}
-
 function __embind_register_class(
     classType,
     pointerType,
@@ -743,9 +683,10 @@ function __embind_register_class_operator_call(
     invoker
 ) {
     classType = requireRegisteredType(classType, 'class');
+    var humanName = classType.name + '.' + 'operator_call';
     argTypes = requireArgumentTypes(argCount, argTypes, 'method ' + humanName);
     invoker = FUNCTION_TABLE[invoker];
-    var humanName = classType.name + '.' + 'operator_call';
+    
     
     classType.Handle.prototype.operator_call = function() {
         if (!this.ptr) {
@@ -763,6 +704,71 @@ function __embind_register_class_operator_call(
         }
 
         var rv = argTypes[0].fromWireType(invoker.apply(null, args));
+        runDestructors(destructors);
+        return rv;
+    };
+}
+
+function __embind_register_class_operator_array_get(
+    classType,
+    elementType,
+    indexType,
+    invoker
+) {
+    classType = requireRegisteredType(classType, 'class');
+    indexType = requireRegisteredType(indexType, 'array access index ' + classType.name);
+    elementType = requireRegisteredType(elementType, 'array access element' + classType.name);
+    invoker = FUNCTION_TABLE[invoker];
+    var humanName = classType.name + '.' + 'operator_array_get';
+    
+    classType.Handle.prototype.array_get = function() {
+        if (!this.ptr) {
+            throw new BindingError('cannot call emscripten binding method ' + humanName + ' on deleted object');
+        }
+        
+        if (arguments.length !== 1) {
+            throw new BindingError('emscripten binding method ' + humanName + ' called with ' + arguments.length + ' arguments, expected ' + 1);
+        }
+        
+        var destructors = [];
+        var args = new Array(2);
+        args[0] = this.ptr;
+        args[1] = indexType.toWireType(destructors, arguments[0]);
+        
+        var rv = elementType.fromWireType(invoker.apply(null, args));
+        runDestructors(destructors);
+        return rv;
+    };
+}
+
+function __embind_register_class_operator_array_set(
+    classType,
+    elementType,
+    indexType,
+    invoker
+) {
+    classType = requireRegisteredType(classType, 'class');
+    indexType = requireRegisteredType(indexType, 'array access index ' + classType.name);
+    elementType = requireRegisteredType(elementType, 'vector ' + classType.name);
+    invoker = FUNCTION_TABLE[invoker];
+    var humanName = classType.name + '.' + 'operator_array_get';
+    
+    classType.Handle.prototype.array_set = function() {
+        if (!this.ptr) {
+            throw new BindingError('cannot call emscripten binding method ' + humanName + ' on deleted object');
+        }
+        
+        if (arguments.length !== 2) {
+            throw new BindingError('emscripten binding method ' + humanName + ' called with ' + arguments.length + ' arguments, expected ' + 2);
+        }
+        
+        var destructors = [];
+        var args = new Array(2);
+        args[0] = this.ptr;
+        args[1] = indexType.toWireType(destructors, arguments[0]);
+        args[2] = elementType.toWireType(destructors, arguments[1]);
+        
+        var rv = elementType.fromWireType(invoker.apply(null, args));
         runDestructors(destructors);
         return rv;
     };
