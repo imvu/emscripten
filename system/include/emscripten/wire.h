@@ -7,6 +7,8 @@
 //
 // We'll call the on-the-wire type WireType.
 
+#include <cstdlib>
+
 namespace emscripten {
     namespace internal {
         typedef const struct _TYPEID* TYPEID;
@@ -131,19 +133,18 @@ namespace emscripten {
         template<typename T>
         struct BindingType;
 
-#define EMSCRIPTEN_DEFINE_NATIVE_BINDING_TYPE(type)             \
-        template<>                                              \
-        struct BindingType<type> {                              \
-            typedef type WireType;                              \
-                                                                \
-            constexpr static WireType toWireType(type v) {      \
-                return v;                                       \
-            }                                                   \
-            constexpr static type fromWireType(WireType v) {    \
-                return v;                                       \
-            }                                                   \
-            static void destroy(WireType) {                     \
-            }                                                   \
+#define EMSCRIPTEN_DEFINE_NATIVE_BINDING_TYPE(type)                 \
+        template<>                                                  \
+        struct BindingType<type> {                                  \
+            typedef type WireType;                                  \
+            constexpr static WireType toWireType(const type&  v) {  \
+                return v;                                           \
+            }                                                       \
+            constexpr static type fromWireType(WireType v) {        \
+                return v;                                           \
+            }                                                       \
+            static void destroy(WireType) {                         \
+            }                                                       \
         }
 
         EMSCRIPTEN_DEFINE_NATIVE_BINDING_TYPE(char);

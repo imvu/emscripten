@@ -45,12 +45,20 @@ function __emval_new_object() {
     return __emval_register({});
 }
 
+function __emval_new_null() {
+    return __emval_register(null);
+}
+
 function __emval_new_long(value) {
     return __emval_register(value);
 }
 
 function __emval_new_cstring(str) {
     return __emval_register(Pointer_stringify(str));
+}
+
+function __emval_has_property(handle, k) {
+    return _emval_handle_array[handle].value.hasOwnProperty(k);
 }
 
 function __emval_get_property(handle, k) {

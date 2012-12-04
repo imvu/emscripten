@@ -12,8 +12,10 @@ namespace emscripten {
             void _emval_incref(EM_VAL value);
             void _emval_decref(EM_VAL value);
             EM_VAL _emval_new_object();
+            EM_VAL _emval_new_null();
             EM_VAL _emval_new_long(long value);
             EM_VAL _emval_new_cstring(const char* str);
+            bool _emval_has_property(EM_VAL object, const char* key);
             EM_VAL _emval_get_property(EM_VAL object, const char* key);
             EM_VAL _emval_get_property_by_long(EM_VAL object, long key);
             EM_VAL _emval_get_property_by_unsigned_long(EM_VAL object, unsigned long key);
@@ -47,6 +49,10 @@ namespace emscripten {
             return val(internal::_emval_new_object());
         };
 
+        static val null() {
+            return val(internal::_emval_new_null());
+        };
+
         static val take_ownership(internal::EM_VAL e) {
             return val(e);
         }
@@ -76,6 +82,10 @@ namespace emscripten {
             internal::_emval_decref(handle);
             handle = v.handle;
             return *this;
+        }
+
+        bool exist(const char* key) const {
+            return internal::_emval_has_property(handle, key);
         }
 
         val get(const char* key) const {
@@ -109,6 +119,10 @@ namespace emscripten {
 
         void set(long key, val v) {
             internal::_emval_set_property_by_int(handle, key, v.handle);
+        }
+
+        unsigned int length() {
+            return get("length").as<unsigned int>();
         }
 
         template<typename ...Args>
