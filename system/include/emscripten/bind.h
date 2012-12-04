@@ -103,7 +103,6 @@ namespace emscripten {
                 TYPEID pointerType,
                 TYPEID constPointerType,
                 const char* className,
-                GenericFunction getDynamicTypeInfo,
                 GenericFunction destructor);
 
             void _embind_register_class_constructor(
@@ -266,14 +265,14 @@ namespace emscripten {
     // FUNCTIONS
     ////////////////////////////////////////////////////////////////////////////////
 
+    extern "C" {
+        int __getDynamicPointerType(int p);
+        int __dynamicPointerCast(int p, int from, int to);
+    }
+
     template<typename FromType, typename ToType>
     ToType& performCast(FromType& from) {
         return *dynamic_cast<ToType*>(&from);
-    };
-
-    template<typename PointerType>
-    internal::TYPEID getDynamicPointerType(PointerType *p) {
-        return reinterpret_cast<internal::TYPEID>(&typeid(*p));
     };
 
     template<typename FromRawType, typename ToRawType>
@@ -661,7 +660,6 @@ namespace emscripten {
                 TypeID<AllowedRawPointer<ClassType>>::get(),
                 TypeID<AllowedRawPointer<const ClassType>>::get(),
                 name,
-                reinterpret_cast<GenericFunction>(&getDynamicPointerType<ClassType>),
                 reinterpret_cast<GenericFunction>(&raw_destructor<ClassType>));
         }
 
