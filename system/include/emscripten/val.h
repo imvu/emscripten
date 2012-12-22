@@ -109,7 +109,7 @@ namespace emscripten {
             return val(internal::_emval_get_property_by_unsigned_long(handle, key));
         }
 
-        val eval_global_method(const char* objectName, const char* methodName) {
+        val eval_global_method(const char* objectName, const char* methodName) const {
             return val(internal::_emval_eval_global_method(handle, objectName, methodName));
         }
 
@@ -119,10 +119,6 @@ namespace emscripten {
 
         void set(long key, val v) {
             internal::_emval_set_property_by_int(handle, key, v.handle);
-        }
-
-        unsigned int length() {
-            return get("length").as<unsigned int>();
         }
 
         template<typename ...Args>
@@ -145,7 +141,7 @@ namespace emscripten {
         }
 
         template<typename ...Args>
-        val call(const char* name, Args... args) {
+        val call(const char* name, Args... args) const {
             using namespace internal;
 
             WithPolicies<>::ArgTypeList<Args...> argList;
@@ -166,7 +162,7 @@ namespace emscripten {
         }
 
         template<typename ...Args>
-        void call_void(const char* name, Args... args) {
+        void call_void(const char* name, Args... args) const {
             using namespace internal;
 
             WithPolicies<>::ArgTypeList<Args...> argList;
