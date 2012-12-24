@@ -174,7 +174,7 @@ function runDestructors(destructors) {
 function makeInvoker(name, argCount, argTypes, invoker, fn) {
     return function() {
         if (arguments.length !== argCount - 1) {
-            throw new BindingError('function ' + name + ' called with ' + arguments.length + ' arguments, expected ' + argCount - 1);
+            throw new BindingError('function ' + name + ' called with ' + arguments.length + ' arguments, expected ' + (argCount - 1));
         }
         var destructors = [];
         var args = new Array(argCount);
@@ -369,6 +369,7 @@ function __embind_register_struct_field(
     };
 }
 
+/*global ___dynamicPointerCast: false*/
 function __embind_register_smart_ptr(
     pointerType,
     pointeeType,
@@ -479,6 +480,7 @@ function __embind_register_smart_ptr(
 }
 
 // TODO: null pointers are always zero (not a Handle) in Javascript
+/*global ___staticPointerCast: false*/
 function __embind_register_class(
     classType,
     pointerType,
@@ -565,11 +567,11 @@ function __embind_register_class(
     });
 
     /*global ___getDynamicPointerType: false*/
-    /*global ___dynamicPointerCast: false*/
     var pointerName = name + '*';
     registerType(pointerType, pointerName, {
         name: pointerName,
         fromWireTypeAutoDowncast: function(ptr) {
+            var handle;
             if (isPolymorphic) {
                 var toType = ___getDynamicPointerType(ptr);
                 var toTypeImpl = null;
@@ -590,13 +592,13 @@ function __embind_register_class(
                     return new Handle(ptr);
                 }
                 var toTypePointerImpl = requireRegisteredType(toTypeImpl.pointerType);
-                var handle = toTypePointerImpl.fromWireType(ptr);
+                handle = toTypePointerImpl.fromWireType(ptr);
                 handle.ptr = ___staticPointerCast(handle.ptr, classType, candidate);
                 // todo: can come back -1 or -2!! Throw appropriate exception
                 return handle;
             } else {
                 handle = new Handle(ptr);
-           }
+            }
             return handle;
         },
         fromWireType: function(ptr) {
@@ -690,7 +692,6 @@ function __embind_register_class_method(
     };
 }
 
-/*global ___staticPointerCast: false*/
 function __embind_register_cast_method(
     classType,
     isPolymorphic,
@@ -718,11 +719,11 @@ function __embind_register_cast_method(
             var derivation = Module.__getDerivationPath(returnType, runtimeType); // downcast is valid
             var size = derivation.size();
             derivation.delete();
-            if (size == 0) {
+            if (size === 0) {
                 derivation = Module.__getDerivationPath(runtimeType, returnType); // upcast is valid
                 size = derivation.size();
                 derivation.delete();
-                if (size == 0) {
+                if (size === 0) {
                     // todo: return zero
                     return returnTypeImpl.fromWireType(0);
                 }
@@ -766,11 +767,11 @@ function __embind_register_pointer_cast_method(
             var derivation = Module.__getDerivationPath(returnPointeeType, runtimeType); // downcast is valid
             var size = derivation.size();
             derivation.delete();
-            if (size == 0) {
+            if (size === 0) {
                 derivation = Module.__getDerivationPath(runtimeType, returnPointeeType); // upcast is valid
                 size = derivation.size();
                 derivation.delete();
-                if (size == 0) {
+                if (size === 0) {
                     return 0;
                 }
             }
