@@ -95,7 +95,6 @@ namespace emscripten {
             void _embind_register_smart_ptr(
                 TYPEID pointerType,
                 TYPEID pointeeType,
-                bool isPolymorphic,
                 const char* pointerName,
                 GenericFunction constructor,
                 GenericFunction destructor,
@@ -321,12 +320,12 @@ namespace emscripten {
             );
         }
 
-        template<typename PointerType>
-        void nullDeallocator(PointerType* p) {}
+//        template<typename PointerType>
+//        void nullDeallocator(PointerType* p) {}
 
         template<typename PointerType>
-        typename std::shared_ptr<PointerType> raw_smart_pointer_constructor(PointerType *ptr, void (PointerType*)) {
-            return std::shared_ptr<PointerType>(ptr, nullDeallocator<PointerType>);
+        typename std::shared_ptr<PointerType> raw_smart_pointer_constructor(PointerType *ptr, std::shared_ptr<PointerType> basePtr, void (PointerType*)) {
+            return std::shared_ptr<PointerType>(basePtr, ptr);
         }
 
         template<typename ClassType>
@@ -619,7 +618,6 @@ namespace emscripten {
             _embind_register_smart_ptr(
                  TypeID<PointerType>::get(),
                  TypeID<PointeeType>::get(),
-                 std::is_polymorphic<PointeeType>::value,
                  name,
                  reinterpret_cast<GenericFunction>(&raw_smart_pointer_constructor<PointeeType*>),
                  reinterpret_cast<GenericFunction>(&raw_destructor<PointerType>),
