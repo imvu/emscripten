@@ -388,4 +388,9 @@ module({
             assert.deepEqual(['called'], calls);
         },
     });
+
+    test('emscripten::internal::optional', function () {
+        assert.true(cm.optional_test_copy());
+        assert.false(cm.optional_test_copy2());
+    });
 });

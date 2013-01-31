@@ -816,9 +816,18 @@ namespace emscripten {
                 }
             }
 
-            optional(const optional&) = delete;
+            optional(const optional& rhs)
+                : initialized(false)
+            {
+                *this = rhs;
+            }
 
             T& operator*() {
+                assert(initialized);
+                return *get();
+            }
+
+            const T& operator*() const {
                 assert(initialized);
                 return *get();
             }
@@ -835,17 +844,23 @@ namespace emscripten {
                 initialized = true;
             }
 
-            optional& operator=(optional& o) {
+            optional& operator=(const optional& o) {
                 if (initialized) {
                     get()->~T();
                 }
-                new(get()) T(*o);
-                initialized = true;
+                if (o.initialized) {
+                    new(get()) T(*o);
+                }
+                initialized = o.initialized;
             }
 
         private:
             T* get() {
                 return reinterpret_cast<T*>(&data);
+            }
+
+            T const* get() const {
+                return reinterpret_cast<T const*>(&data);
             }
 
             bool initialized;
@@ -863,9 +878,9 @@ namespace emscripten {
             initialize(handle);
         }
 
-        JSInterface(JSInterface& obj) {
-            jsobj = obj.jsobj;
-        }
+        JSInterface(const JSInterface& obj)
+            : jsobj(obj.jsobj)
+        {}
 
         template<typename ReturnType, typename... Args>
         ReturnType call(const char* name, Args... args) {
@@ -873,7 +888,7 @@ namespace emscripten {
             return Caller<ReturnType, Args...>::call(*jsobj, name, args...);
         }
 
-        static std::shared_ptr<JSInterface> cloneToSharedPtr(JSInterface& i) {
+        static std::shared_ptr<JSInterface> cloneToSharedPtr(const JSInterface& i) {
             return std::make_shared<JSInterface>(i);
         }
 
