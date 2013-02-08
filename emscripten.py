@@ -819,11 +819,13 @@ WARNING: You should normally never use this! Use emcc instead.
   if keywords.temp_dir is None:
     temp_files = get_configuration().get_temp_files()
     temp_dir = get_configuration().TEMP_DIR
+    cache = cache_module.Cache()
   else:
     temp_dir = keywords.temp_dir
     if not os.path.exists(temp_dir):
       os.makedirs(temp_dir)
     temp_files = tempfiles.TempFiles(temp_dir)
+    cache = cache_module.Cache(os.path.join(temp_dir, 'cache'))
 
   if keywords.compiler is None:
     from tools import shared
@@ -836,7 +838,6 @@ WARNING: You should normally never use this! Use emcc instead.
     DEBUG = keywords.verbose
     DEBUG_CACHE = keywords.verbose
 
-  cache = cache_module.Cache()
   temp_files.run_and_clean(lambda: main(
     keywords,
     compiler_engine=keywords.compiler,
