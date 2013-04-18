@@ -231,8 +231,16 @@ namespace emscripten {
 
     namespace internal {
         template<typename ClassType, typename Signature>
-        struct MemberFunctionType {
-            typedef Signature (ClassType::*type);
+        struct MemberFunctionType;
+
+        template<typename ClassType, typename ReturnType, typename... Args>
+        struct MemberFunctionType<ClassType, ReturnType(Args...)> {
+            typedef ReturnType (ClassType::*type)(Args...);
+        };
+
+        template<typename ClassType, typename ReturnType, typename... Args>
+        struct MemberFunctionType<ClassType, ReturnType(Args...)const> {
+            typedef ReturnType (ClassType::*type)(Args...) const;
         };
     }
 
