@@ -1936,6 +1936,15 @@ struct MultipleAccessors {
     }
 };
 
+struct ConstAndNonConst {
+    void method(int) {
+    }
+
+    int method() const {
+        return 10;
+    }
+};
+
 EMSCRIPTEN_BINDINGS(overloads) {
     function("overloaded_function", select_overload<int(int)>(&overloaded_function));
     function("overloaded_function", select_overload<int(int, int)>(&overloaded_function));
@@ -1966,6 +1975,10 @@ EMSCRIPTEN_BINDINGS(overloads) {
 
     class_<MultipleAccessors>("MultipleAccessors")
         .function("getConst", select_overload<int(int)const>(&MultipleAccessors::getConst))
+        ;
+
+    class_<ConstAndNonConst>("ConstAndNonConst")
+        .function("method", select_const(&ConstAndNonConst::method))
         ;
 }
 
