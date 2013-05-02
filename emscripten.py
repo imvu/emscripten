@@ -771,6 +771,7 @@ WARNING: You should normally never use this! Use emcc instead.
     temp_files = get_configuration().get_temp_files()
     temp_dir = get_configuration().TEMP_DIR
     cache = cache_module.Cache()
+    temp_dir = get_configuration().TEMP_DIR
   else:
     temp_dir = keywords.temp_dir
     if not os.path.exists(temp_dir):
