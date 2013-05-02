@@ -5,8 +5,7 @@
 
 int counter = 0;
 
-extern "C"
-{
+extern "C" {
 
 int __attribute__((noinline)) get_counter()
 {
@@ -45,6 +44,9 @@ extern void sum_float_benchmark_embind_js();
 
 extern void increment_class_counter_benchmark_embind_js(int N);
 extern void move_gameobjects_benchmark_embind_js();
+
+extern void call_through_interface0();
+extern void call_through_interface1();
 }
 
 class Vec3
@@ -120,6 +122,56 @@ public:
     int class_counter;
 };
 
+class Interface
+{
+public:
+    virtual void call0() = 0;
+    virtual std::wstring call1(const std::wstring& str1, const std::wstring& str2) = 0;
+};
+
+class InterfaceWrapper : public emscripten::wrapper<Interface>
+{
+public:
+    EMSCRIPTEN_WRAPPER(InterfaceWrapper);
+
+    void call0() override {
+        return call<void>("call0");
+    }
+
+    std::wstring call1(const std::wstring& str1, const std::wstring& str2) {
+        return call<std::wstring>("call1", str1, str2);
+    }
+};
+
+void callInterface0(unsigned N, Interface& o) {
+    for (unsigned i = 0; i < N; i += 8) {
+        o.call0();
+        o.call0();
+        o.call0();
+        o.call0();
+        o.call0();
+        o.call0();
+        o.call0();
+        o.call0();
+    }
+}
+
+void callInterface1(unsigned N, Interface& o) {
+    static std::wstring foo(L"foo");
+    static std::wstring bar(L"bar");
+    static std::wstring baz(L"baz");
+    static std::wstring qux(L"qux");
+    for (unsigned i = 0; i < N; i += 7) {
+        o.call1(
+            o.call1(
+                o.call1(foo, bar),
+                o.call1(baz, qux)),
+            o.call1(
+                o.call1(qux, foo),
+                o.call1(bar, baz)));
+    }
+}
+
 EMSCRIPTEN_BINDINGS(benchmark)
 {
     using namespace emscripten;
@@ -155,7 +207,15 @@ EMSCRIPTEN_BINDINGS(benchmark)
         .constructor<>()
         .function("incr_global_counter", &Foo::incr_global_counter)
         .function("incr_class_counter", &Foo::incr_class_counter)
-        .function("class_counter_val", &Foo::class_counter_val);
+        .function("class_counter_val", &Foo::class_counter_val)
+        ;
+
+    class_<Interface>("Interface")
+        .allow_subclass<InterfaceWrapper>()
+        ;
+
+    function("callInterface0", &callInterface0);
+    function("callInterface1", &callInterface1);
 }
 
 void __attribute__((noinline)) emscripten_get_now_benchmark(int N)
@@ -308,6 +368,7 @@ void __attribute__((noinline)) move_gameobjects_benchmark()
 
 int main()
 {
+    /*
     for(int i = 1000; i <= 100000; i *= 10)
         emscripten_get_now_benchmark(i);
 
@@ -341,4 +402,9 @@ int main()
     printf("\n");
     move_gameobjects_benchmark();
     move_gameobjects_benchmark_embind_js();
+    printf("\n");
+    */
+    emscripten_get_now();
+    call_through_interface0();
+    call_through_interface1();
 }
