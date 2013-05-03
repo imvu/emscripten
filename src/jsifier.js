@@ -484,14 +484,17 @@ function JSify(data, functionsOnly, givenFunctions) {
       if (BUILD_AS_SHARED_LIB) {
         // Shared libraries reuse the runtime of their parents.
         item.JS = '';
-      } else {
-        // If this is not linkable, anything not in the library is definitely missing
-        if (!LINKABLE && !LibraryManager.library.hasOwnProperty(shortident) && !LibraryManager.library.hasOwnProperty(shortident + '__inline')) {
-          if (ERROR_ON_UNDEFINED_SYMBOLS) error('unresolved symbol: ' + shortident);
-          if (VERBOSE || WARN_ON_UNDEFINED_SYMBOLS) printErr('warning: unresolved symbol: ' + shortident);
-          LibraryManager.library[shortident] = new Function("Module['printErr']('missing function: " + shortident + "'); abort(-1);");
-        }
+      } else if (LibraryManager.library.hasOwnProperty(shortident)) {
         item.JS = addFromLibrary(shortident);
+      } else if (!LibraryManager.library.hasOwnProperty(shortident + '__inline')) {
+        if (!(item.ident in DEAD_FUNCTIONS)) {
+          item.JS = 'var ' + item.ident + '; // stub for ' + item.ident;
+          if (ASM_JS) {
+            error('Unresolved symbol: ' + item.ident + ', this must be corrected for asm.js validation to succeed. Consider adding it to DEAD_FUNCTIONS.');
+          } else if (WARN_ON_UNDEFINED_SYMBOLS) {
+            warn('Unresolved symbol: ' + item.ident);
+          }
+        }
       }
       return ret;
     }
@@ -1448,6 +1451,16 @@ function JSify(data, functionsOnly, givenFunctions) {
     var returnType;
     if (byPointer || ASM_JS) {
       returnType = getReturnType(type);
+    }
+
+    if (callIdent in DEAD_FUNCTIONS) {
+      var ret = 'abort(' + DEAD_FUNCTIONS[callIdent] + ')';
+      if (ASM_JS) ret = asmCoercion(ret, returnType);
+      if (ASSERTIONS) {
+        assert(DEFAULT_LIBRARY_FUNCS_TO_INCLUDE.indexOf('putchar') >= 0, 'need putchar for DEAD_FUNCTIONS + ASSERTIONS output');
+        ret = '(' + makePrintChars('dead:' + callIdent, ',') + ',' + ret + ')';
+      }
+      return ret;
     }
 
     if (byPointer) {
