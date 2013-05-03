@@ -348,7 +348,12 @@ var PGO = 0; // Enables profile-guided optimization in the form of runtime check
              // calling PGOMonitor.dump());
 var DEAD_FUNCTIONS = []; // Functions on this list are not converted to JS, and calls to
                          // them are turned into abort()s. This is potentially useful for
-                         // reducing code size.
+                         // (1) reducing code size, if you know some function will never
+                         // be called (see PGO), and also (2) ASM.js requires all declared
+                         // functions to have a corresponding implementation (even if the
+                         // function is never called) and will emit an error during linking if no
+                         // implementation can be found; with this option, asm.js validation will
+                         // succeed for that function and calls to it.
                          // If a dead function is actually called, you will get a runtime
                          // error.
                          // TODO: options to lazily load such functions
