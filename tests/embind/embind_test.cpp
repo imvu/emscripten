@@ -1410,6 +1410,30 @@ std::string unsigned_long_to_string(unsigned long val) {
     return str;
 }
 
+int annotated_function(int x) {
+    return x+4;
+}
+
+class AnnotatedClass {
+public:
+    AnnotatedClass(): member(0) {};
+    int member;
+    
+    int getMember() {
+        return member;
+    }
+    
+    int constMember() const {
+        return member;
+    }
+    
+    static int staticValue() {
+        return 4;
+    }
+};
+
+enum AnnotatedEnum{ ANNOTATED_ONE, ANNOTATED_TWO };
+
 EMSCRIPTEN_BINDINGS(tests) {
     register_vector<int>("IntegerVector");
     register_vector<char>("CharVector");
@@ -1850,6 +1874,22 @@ EMSCRIPTEN_BINDINGS(tests) {
     function("unsigned_int_to_string", &unsigned_int_to_string);
     function("long_to_string", &long_to_string);
     function("unsigned_long_to_string", &unsigned_long_to_string);
+    
+    function("annotated_function", &annotated_function, "Takes a number and adds 4");
+
+    class_<AnnotatedClass>("AnnotatedClass", "A fully annotated class")
+        .smart_ptr<std::shared_ptr<AnnotatedClass>>("Smart pointer for AnnotatedClass")
+        .constructor<>("The constructor of AnnotatedClass")
+        .property("member", &AnnotatedClass::member, "A member of AnnotatedClass")
+        .function("getMember", &AnnotatedClass::getMember, "Return the member of AnnotatedClass")
+        .function("constMember", &AnnotatedClass::constMember, "Returns a const member of AnnotatedClass")
+        .class_function("staticValue", &AnnotatedClass::staticValue, "Gets a class value of AnnotatedClass")
+        ;
+        
+    enum_<AnnotatedEnum>("AnnotatedEnum", "A fully annotated enum")
+        .value("ANNOTATED_ONE", ANNOTATED_ONE, "The value ANNOTATED_ONE")
+        .value("ANNOTATED_TWO", ANNOTATED_TWO, "The value ANNOTATED_TWO")
+        ;
 }
 
 int overloaded_function(int i) {
@@ -2219,6 +2259,8 @@ EMSCRIPTEN_BINDINGS(constants) {
 
     StructVector sv(1, 2, 3, 4);
     constant("VALUE_OBJECT_CONSTANT", sv);
+    
+    constant("ANNOTATED_CONSTANT", 1, "This is an annotated constant");
 }
 
 class DerivedWithOffset : public DummyDataToTestPointerAdjustment, public Base {    

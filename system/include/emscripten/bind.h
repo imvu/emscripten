@@ -68,13 +68,15 @@ namespace emscripten {
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker,
-                GenericFunction function);
+                GenericFunction function,
+                const char* annotation);
 
             void _embind_register_value_array(
                 TYPEID tupleType,
                 const char* name,
                 GenericFunction constructor,
-                GenericFunction destructor);
+                GenericFunction destructor,
+                const char* annotation);
             
             void _embind_register_value_array_element(
                 TYPEID tupleType,
@@ -83,7 +85,8 @@ namespace emscripten {
                 void* getterContext,
                 TYPEID setterArgumentType,
                 GenericFunction setter,
-                void* setterContext);
+                void* setterContext,
+                const char* annotation);
 
             void _embind_finalize_value_array(TYPEID tupleType);
 
@@ -91,7 +94,8 @@ namespace emscripten {
                 TYPEID structType,
                 const char* fieldName,
                 GenericFunction constructor,
-                GenericFunction destructor);
+                GenericFunction destructor,
+                const char* annotation);
             
             void _embind_register_value_object_field(
                 TYPEID structType,
@@ -101,7 +105,8 @@ namespace emscripten {
                 void* getterContext,
                 TYPEID setterArgumentType,
                 GenericFunction setter,
-                void* setterContext);
+                void* setterContext,
+                const char* annotation);
 
             void _embind_finalize_value_object(TYPEID structType);
 
@@ -113,7 +118,8 @@ namespace emscripten {
                 GenericFunction getPointee,
                 GenericFunction constructor,
                 GenericFunction share,
-                GenericFunction destructor);
+                GenericFunction destructor,
+                const char* annotation);
 
             void _embind_register_class(
                 TYPEID classType,
@@ -124,14 +130,16 @@ namespace emscripten {
                 GenericFunction upcast,
                 GenericFunction downcast,
                 const char* className,
-                GenericFunction destructor);
+                GenericFunction destructor,
+                const char* annotation);
 
             void _embind_register_class_constructor(
                 TYPEID classType,
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker,
-                GenericFunction constructor);
+                GenericFunction constructor,
+                const char* annotation);
 
             void _embind_register_class_function(
                 TYPEID classType,
@@ -139,7 +147,8 @@ namespace emscripten {
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker,
-                void* context);
+                void* context,
+                const char* annotation);
 
             void _embind_register_class_property(
                 TYPEID classType,
@@ -149,7 +158,8 @@ namespace emscripten {
                 void* getterContext,
                 TYPEID setterArgumentType,
                 GenericFunction setter,
-                void* setterContext);
+                void* setterContext,
+                const char* annotation);
 
             void _embind_register_class_class_function(
                 TYPEID classType,
@@ -157,16 +167,19 @@ namespace emscripten {
                 unsigned argCount,
                 TYPEID argTypes[],
                 GenericFunction invoker,
-                GenericFunction method);
+                GenericFunction method,
+                const char* annotation);
 
             void _embind_register_enum(
                 TYPEID enumType,
-                const char* name);
+                const char* name,
+                const char* annotation);
 
             void _embind_register_enum_value(
                 TYPEID enumType,
                 const char* valueName,
-                GenericEnumValue value);
+                GenericEnumValue value,
+                const char* annotation);
 
             void _embind_register_interface(
                 TYPEID interfaceType,
@@ -177,7 +190,8 @@ namespace emscripten {
             void _embind_register_constant(
                 const char* name,
                 TYPEID constantType,
-                uintptr_t value);
+                uintptr_t value,
+                const char* annotation);
         }
     }
 }
@@ -294,7 +308,7 @@ namespace emscripten {
     }
 
     template<typename ReturnType, typename... Args, typename... Policies>
-    void function(const char* name, ReturnType (*fn)(Args...), Policies...) {
+    void function(const char* name, ReturnType (*fn)(Args...), const char* annotation, Policies...) {
         using namespace internal;
         typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, Args...> args;
         _embind_register_function(
@@ -302,7 +316,13 @@ namespace emscripten {
             args.count,
             args.types,
             reinterpret_cast<GenericFunction>(&Invoker<ReturnType, Args...>::invoke),
-            reinterpret_cast<GenericFunction>(fn));
+            reinterpret_cast<GenericFunction>(fn),
+            annotation);
+    }
+
+    template<typename ReturnType, typename... Args, typename... Policies>
+    void function(const char* methodName, ReturnType (*fn)(Args...), Policies... policies) {
+        function(methodName, fn, static_cast<const char*>(nullptr), policies...);
     }
 
     namespace internal {
@@ -533,13 +553,14 @@ namespace emscripten {
     template<typename ClassType>
     class value_array : public internal::noncopyable {
     public:
-        value_array(const char* name) {
+        value_array(const char* name, const char* annotation=nullptr) {
             using namespace internal;
             _embind_register_value_array(
                 TypeID<ClassType>::get(),
                 name,
                 reinterpret_cast<GenericFunction>(&raw_constructor<ClassType>),
-                reinterpret_cast<GenericFunction>(&raw_destructor<ClassType>));
+                reinterpret_cast<GenericFunction>(&raw_destructor<ClassType>),
+                annotation);
         }
 
         ~value_array() {
@@ -548,7 +569,7 @@ namespace emscripten {
         }
 
         template<typename InstanceType, typename ElementType>
-        value_array& element(ElementType InstanceType::*field) {
+        value_array& element(ElementType InstanceType::*field, const char* annotation=nullptr) {
             using namespace internal;
             _embind_register_value_array_element(
                 TypeID<ClassType>::get(),
@@ -561,12 +582,13 @@ namespace emscripten {
                 reinterpret_cast<GenericFunction>(
                     &MemberAccess<InstanceType, ElementType>
                     ::template setWire<ClassType>),
-                getContext(field));
+                getContext(field),
+                annotation);
             return *this;
         }
 
         template<typename Getter, typename Setter>
-        value_array& element(Getter getter, Setter setter) {
+        value_array& element(Getter getter, Setter setter, const char* annotation=nullptr) {
             using namespace internal;
             typedef GetterPolicy<Getter> GP;
             typedef SetterPolicy<Setter> SP;
@@ -577,12 +599,13 @@ namespace emscripten {
                 GP::getContext(getter),
                 TypeID<typename SP::ArgumentType>::get(),
                 reinterpret_cast<GenericFunction>(&SP::template set<ClassType>),
-                SP::getContext(setter));
+                SP::getContext(setter),
+                annotation);
             return *this;
         }
 
         template<int Index>
-        value_array& element(index<Index>) {
+        value_array& element(index<Index>,const char* annotation=nullptr) {
             using namespace internal;
             ClassType* null = 0;
             typedef typename std::remove_reference<decltype((*null)[Index])>::type ElementType;
@@ -593,7 +616,8 @@ namespace emscripten {
                 reinterpret_cast<void*>(Index),
                 TypeID<ElementType>::get(),
                 reinterpret_cast<GenericFunction>(&internal::set_by_index<ClassType, ElementType>),
-                reinterpret_cast<void*>(Index));
+                reinterpret_cast<void*>(Index),
+                annotation);
             return *this;
         }
     };
@@ -605,13 +629,14 @@ namespace emscripten {
     template<typename ClassType>
     class value_object : public internal::noncopyable {
     public:
-        value_object(const char* name) {
+        value_object(const char* name, const char* annotation=nullptr) {
             using namespace internal;
             _embind_register_value_object(
                 TypeID<ClassType>::get(),
                 name,
                 reinterpret_cast<GenericFunction>(&raw_constructor<ClassType>),
-                reinterpret_cast<GenericFunction>(&raw_destructor<ClassType>));
+                reinterpret_cast<GenericFunction>(&raw_destructor<ClassType>),
+                annotation);
         }
 
         ~value_object() {
@@ -619,7 +644,7 @@ namespace emscripten {
         }
 
         template<typename InstanceType, typename FieldType>
-        value_object& field(const char* fieldName, FieldType InstanceType::*field) {
+        value_object& field(const char* fieldName, FieldType InstanceType::*field, const char* annotation=nullptr) {
             using namespace internal;
             _embind_register_value_object_field(
                 TypeID<ClassType>::get(),
@@ -633,7 +658,8 @@ namespace emscripten {
                 reinterpret_cast<GenericFunction>(
                     &MemberAccess<InstanceType, FieldType>
                     ::template setWire<ClassType>),
-                getContext(field));
+                getContext(field),
+                annotation);
             return *this;
         }
     
@@ -641,7 +667,8 @@ namespace emscripten {
         value_object& field(
             const char* fieldName,
             Getter getter,
-            Setter setter
+            Setter setter,
+            const char* annotation=nullptr
         ) {
             using namespace internal;
             typedef GetterPolicy<Getter> GP;
@@ -654,12 +681,13 @@ namespace emscripten {
                 GP::getContext(getter),
                 TypeID<typename SP::ArgumentType>::get(),
                 reinterpret_cast<GenericFunction>(&SP::template set<ClassType>),
-                SP::getContext(setter));
+                SP::getContext(setter),
+                annotation);
             return *this;
         }
 
         template<int Index>
-        value_object& field(const char* fieldName, index<Index>) {
+        value_object& field(const char* fieldName, index<Index>, const char* annotation=nullptr) {
             using namespace internal;
             ClassType* null = 0;
             typedef typename std::remove_reference<decltype((*null)[Index])>::type ElementType;
@@ -671,7 +699,8 @@ namespace emscripten {
                 reinterpret_cast<void*>(Index),
                 TypeID<ElementType>::get(),
                 reinterpret_cast<GenericFunction>(&internal::set_by_index<ClassType, ElementType>),
-                reinterpret_cast<void*>(Index));
+                reinterpret_cast<void*>(Index),
+                annotation);
             return *this;
         }
     };
@@ -849,7 +878,7 @@ namespace emscripten {
     public:
         class_() = delete;
 
-        explicit class_(const char* name) {
+        explicit class_(const char* name,const char* annotation=nullptr) {
             using namespace internal;
 
             BaseSpecifier::template verify<ClassType>();
@@ -863,11 +892,12 @@ namespace emscripten {
                 BaseSpecifier::template getUpcaster<ClassType>(),
                 BaseSpecifier::template getDowncaster<ClassType>(),
                 name,
-                reinterpret_cast<GenericFunction>(&raw_destructor<ClassType>));
+                reinterpret_cast<GenericFunction>(&raw_destructor<ClassType>),
+                annotation);
         }
 
         template<typename PointerType>
-        class_& smart_ptr() {
+        class_& smart_ptr(const char* annotation=nullptr) {
             using namespace internal;
 
             typedef smart_ptr_trait<PointerType> PointerTrait;
@@ -883,7 +913,8 @@ namespace emscripten {
                 reinterpret_cast<GenericFunction>(&PointerTrait::get),
                 reinterpret_cast<GenericFunction>(&operator_new<PointerType>),
                 reinterpret_cast<GenericFunction>(&PointerTrait::share),
-                reinterpret_cast<GenericFunction>(&raw_destructor<PointerType>));
+                reinterpret_cast<GenericFunction>(&raw_destructor<PointerType>),
+                annotation);
             return *this;
         };
 
@@ -895,7 +926,7 @@ namespace emscripten {
         }
 
         template<typename... Args, typename ReturnType, typename... Policies>
-        class_& constructor(ReturnType (*factory)(Args...), Policies...) {
+        class_& constructor(ReturnType (*factory)(Args...), const char* annotation, Policies...) {
             using namespace internal;
 
             // TODO: allows all raw pointers... policies need a rethink
@@ -905,12 +936,18 @@ namespace emscripten {
                 args.count,
                 args.types,
                 reinterpret_cast<GenericFunction>(&Invoker<ReturnType, Args...>::invoke),
-                reinterpret_cast<GenericFunction>(factory));
+                reinterpret_cast<GenericFunction>(factory),
+                annotation);
             return *this;
         }
 
+        template<typename... Args, typename ReturnType, typename... Policies>
+        class_& constructor(ReturnType (*factory)(Args...), Policies... policies) {
+            return constructor(factory, static_cast<const char*>(nullptr), policies...);
+        }
+
         template<typename SmartPtr, typename... Args, typename... Policies>
-        class_& smart_ptr_constructor(SmartPtr (*factory)(Args...), Policies...) {
+        class_& smart_ptr_constructor(SmartPtr (*factory)(Args...), const char* annotation, Policies...) {
             using namespace internal;
 
             smart_ptr<SmartPtr>();
@@ -921,8 +958,14 @@ namespace emscripten {
                 args.count,
                 args.types,
                 reinterpret_cast<GenericFunction>(&Invoker<SmartPtr, Args...>::invoke),
-                reinterpret_cast<GenericFunction>(factory));
+                reinterpret_cast<GenericFunction>(factory),
+                annotation);
             return *this;
+        }
+
+        template<typename SmartPtr, typename... Args, typename... Policies>
+        class_& smart_ptr_constructor(SmartPtr (*factory)(Args...), Policies... policies) {
+            return smart_ptr_constructor(factory, static_cast<const char*>(nullptr), policies...);
         }
 
         template<typename WrapperType, typename PointerType = WrapperType*>
@@ -940,7 +983,7 @@ namespace emscripten {
         }
 
         template<typename ReturnType, typename... Args, typename... Policies>
-        class_& function(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...), Policies...) {
+        class_& function(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...), const char* annotation, Policies...) {
             using namespace internal;
 
             typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, AllowedRawPointer<ClassType>, Args...> args;
@@ -950,12 +993,18 @@ namespace emscripten {
                 args.count,
                 args.types,
                 reinterpret_cast<GenericFunction>(&MethodInvoker<decltype(memberFunction), ReturnType, ClassType*, Args...>::invoke),
-                getContext(memberFunction));
+                getContext(memberFunction),
+                annotation);
             return *this;
         }
 
         template<typename ReturnType, typename... Args, typename... Policies>
-        class_& function(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...) const, Policies...) {
+        class_& function(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...), Policies... policies) {
+            return this->function(methodName, memberFunction, static_cast<const char*>(nullptr), policies...);
+        }
+
+        template<typename ReturnType, typename... Args, typename... Policies>
+        class_& function(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...) const, const char* annotation, Policies...) {
             using namespace internal;
 
             typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, AllowedRawPointer<const ClassType>, Args...> args;
@@ -965,12 +1014,18 @@ namespace emscripten {
                 args.count,
                 args.types,
                 reinterpret_cast<GenericFunction>(&MethodInvoker<decltype(memberFunction), ReturnType, const ClassType*, Args...>::invoke),
-                getContext(memberFunction));
+                getContext(memberFunction),
+                annotation);
             return *this;
         }
 
+        template<typename ReturnType, typename... Args, typename... Policies>
+        class_& function(const char* methodName, ReturnType (ClassType::*memberFunction)(Args...) const, Policies... policies) {
+            return this->function(methodName, memberFunction, static_cast<const char*>(nullptr), policies...);
+        }
+
         template<typename ReturnType, typename ThisType, typename... Args, typename... Policies>
-        class_& function(const char* methodName, ReturnType (*function)(ThisType, Args...), Policies...) {
+        class_& function(const char* methodName, ReturnType (*function)(ThisType, Args...), const char* annotation, Policies...) {
             using namespace internal;
 
             typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, ThisType, Args...> args;
@@ -980,12 +1035,18 @@ namespace emscripten {
                 args.count,
                 args.types,
                 reinterpret_cast<GenericFunction>(&FunctionInvoker<decltype(function), ReturnType, ThisType, Args...>::invoke),
-                getContext(function));
+                getContext(function),
+                annotation);
             return *this;
         }
 
+        template<typename ReturnType, typename ThisType, typename... Args, typename... Policies>
+        class_& function(const char* methodName, ReturnType (*function)(ThisType, Args...), Policies... policies) {
+            return this->function(methodName, function, static_cast<const char*>(nullptr), policies...);
+        }
+
         template<typename FieldType, typename = typename std::enable_if<!std::is_function<FieldType>::value>::type>
-        class_& property(const char* fieldName, const FieldType ClassType::*field) {
+        class_& property(const char* fieldName, const FieldType ClassType::*field, const char* annotation=nullptr) {
             using namespace internal;
 
             _embind_register_class_property(
@@ -996,12 +1057,13 @@ namespace emscripten {
                 getContext(field),
                 0,
                 0,
-                0);
+                0,
+                annotation);
             return *this;
         }
 
         template<typename FieldType, typename = typename std::enable_if<!std::is_function<FieldType>::value>::type>
-        class_& property(const char* fieldName, FieldType ClassType::*field) {
+        class_& property(const char* fieldName, FieldType ClassType::*field, const char* annotation=nullptr) {
             using namespace internal;
 
             _embind_register_class_property(
@@ -1012,12 +1074,13 @@ namespace emscripten {
                 getContext(field),
                 TypeID<FieldType>::get(),
                 reinterpret_cast<GenericFunction>(&MemberAccess<ClassType, FieldType>::template setWire<ClassType>),
-                getContext(field));
+                getContext(field),
+                annotation);
             return *this;
         }
 
         template<typename Getter>
-        class_& property(const char* fieldName, Getter getter) {
+        class_& property(const char* fieldName, Getter getter, const char* annotation=nullptr) {
             using namespace internal;
             typedef GetterPolicy<Getter> GP;
             _embind_register_class_property(
@@ -1028,12 +1091,13 @@ namespace emscripten {
                 GP::getContext(getter),
                 0,
                 0,
-                0);
+                0,
+                annotation);
             return *this;
         }
 
         template<typename Getter, typename Setter>
-        class_& property(const char* fieldName, Getter getter, Setter setter) {
+        class_& property(const char* fieldName, Getter getter, Setter setter, const char* annotation=nullptr) {
             using namespace internal;
             typedef GetterPolicy<Getter> GP;
             typedef SetterPolicy<Setter> SP;
@@ -1045,12 +1109,13 @@ namespace emscripten {
                 GP::getContext(getter),
                 TypeID<typename SP::ArgumentType>::get(),
                 reinterpret_cast<GenericFunction>(&SP::template set<ClassType>),
-                SP::getContext(setter));
+                SP::getContext(setter),
+                annotation);
             return *this;
         }
 
         template<typename ReturnType, typename... Args, typename... Policies>
-        class_& class_function(const char* methodName, ReturnType (*classMethod)(Args...), Policies...) {
+        class_& class_function(const char* methodName, ReturnType (*classMethod)(Args...), const char* annotation, Policies...) {
             using namespace internal;
 
             typename WithPolicies<Policies...>::template ArgTypeList<ReturnType, Args...> args;
@@ -1060,8 +1125,14 @@ namespace emscripten {
                 args.count,
                 args.types,
                 reinterpret_cast<internal::GenericFunction>(&internal::Invoker<ReturnType, Args...>::invoke),
-                reinterpret_cast<GenericFunction>(classMethod));
+                reinterpret_cast<GenericFunction>(classMethod),
+                annotation);
             return *this;
+        }
+
+        template<typename ReturnType, typename... Args, typename... Policies>
+        class_& class_function(const char* methodName, ReturnType (*classMethod)(Args...), Policies... policies) {
+            return class_function(methodName, classMethod, static_cast<const char*>(nullptr), policies...);
         }
     };
 
@@ -1157,13 +1228,14 @@ namespace emscripten {
     template<typename EnumType>
     class enum_ {
     public:
-        enum_(const char* name) {
+        enum_(const char* name, const char* annotation=nullptr) {
             _embind_register_enum(
                 internal::TypeID<EnumType>::get(),
-                name);
+                name,
+                annotation);
         }
 
-        enum_& value(const char* name, EnumType value) {
+        enum_& value(const char* name, EnumType value, const char* annotation=nullptr) {
             // TODO: there's still an issue here.
             // if EnumType is an unsigned long, then JS may receive it as a signed long
             static_assert(sizeof(value) <= sizeof(internal::GenericEnumValue), "enum type must fit in a GenericEnumValue");
@@ -1171,7 +1243,8 @@ namespace emscripten {
             _embind_register_enum_value(
                 internal::TypeID<EnumType>::get(),
                 name,
-                static_cast<internal::GenericEnumValue>(value));
+                static_cast<internal::GenericEnumValue>(value),
+                annotation);
             return *this;
         }
     };
@@ -1193,13 +1266,14 @@ namespace emscripten {
     }
 
     template<typename ConstantType>
-    void constant(const char* name, const ConstantType& v) {
+    void constant(const char* name, const ConstantType& v, const char* annotation=nullptr) {
         using namespace internal;
         typedef BindingType<const ConstantType&> BT;
         _embind_register_constant(
             name,
             TypeID<const ConstantType&>::get(),
-            asGenericValue(BindingType<const ConstantType&>::toWireType(v)));
+            asGenericValue(BindingType<const ConstantType&>::toWireType(v)),
+            annotation);
     }
 }
 
