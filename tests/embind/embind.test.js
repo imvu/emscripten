@@ -1878,6 +1878,56 @@ module({
         //     setTimeout(fn, 0);
         // });
     });
+    
+    BaseFixture.extend("annotations", function() {
+        test("can access annotation of annotated function", function() {
+            var metadata=cm.get_embind_metadata();
+            var annotated_function_data=metadata.functions.annotated_function;
+
+            assert.equals(25, annotated_function_data.annotation.length);
+            
+            assert.equals(2, annotated_function_data.signature.length);
+            
+            var function_return_type=annotated_function_data.signature[0];
+            var function_arg_type=annotated_function_data.signature[1];
+            
+            assert.equals('int', metadata.types[function_return_type].name);
+            assert.equals('int', metadata.types[function_arg_type].name);
+        });
+        
+        test("can access annotation of annotated class", function() {
+            var metadata=cm.get_embind_metadata();
+            var annotatedClassData=metadata.classes.AnnotatedClass;
+
+            assert.equal(23, annotatedClassData.annotation.length);
+            assert.equal(33, annotatedClassData.constructors[0].annotation.length);
+            assert.equal(26, annotatedClassData.properties.member.annotation.length);
+            assert.equal(35, annotatedClassData.functions.getMember.annotation.length);
+            
+            var annotated_ptr_data;
+            for(var i in metadata.smart_ptrs){
+                if(i.indexOf('AnnotatedClass')>=0){
+                    annotated_ptr_data=metadata.smart_ptrs[i];
+                    break;
+                }
+            }
+            assert.equal(32,annotated_ptr_data.annotation.length);
+        });
+        
+        test("can access annotation of annotated enum", function() {
+            var metadata=cm.get_embind_metadata();
+            var annotatedEnumData=metadata.enums.AnnotatedEnum;
+
+            assert.equal(22, annotatedEnumData.annotation.length);
+        });
+
+        test("can access annotation of annotated constant", function() {
+            var metadata=cm.get_embind_metadata();
+            var annotatedConstantData=metadata.constants.ANNOTATED_CONSTANT;
+
+            assert.equal(29, annotatedConstantData.annotation.length);
+        });
+    });
 });
 
 /* global run_all_tests */

@@ -620,30 +620,60 @@ function craftInvokerFunction(humanName, argTypes, classType, cppInvokerFunc, cp
     return invokerFunction;
 }
 
-function __embind_register_function(name, argCount, rawArgTypesAddr, rawInvoker, fn) {
-    var argTypes = heap32VectorToArray(argCount, rawArgTypesAddr);
+var __embind_metadata = {
+    constants: {},
+    functions: {},
+    enums: {},
+    classes: {},
+    value_arrays: {},
+    value_objects: {},
+    smart_ptrs: {},
+    types: registeredTypes
+};
+
+Module['get_embind_metadata'] = function() { return __embind_metadata; };
+
+function __embind_read_annotation(annotation) {
+    return annotation ? readLatin1String(annotation) : undefined;
+}
+
+function __embind_register_function(name, argCount, rawArgTypesAddr, rawInvoker, fn, annotation) {
+    var rawArgTypes = heap32VectorToArray(argCount, rawArgTypesAddr);
     name = readLatin1String(name);
     rawInvoker = FUNCTION_TABLE[rawInvoker];
 
     exposePublicSymbol(name, function() {
-        throwUnboundTypeError('Cannot call ' + name + ' due to unbound types', argTypes);
+        throwUnboundTypeError('Cannot call ' + name + ' due to unbound types', rawArgTypes);
     }, argCount - 1);
 
-    whenDependentTypesAreResolved([], argTypes, function(argTypes) {
+    whenDependentTypesAreResolved([], rawArgTypes, function(argTypes) {
         var invokerArgsArray = [argTypes[0] /* return value */, null /* no class 'this'*/].concat(argTypes.slice(1) /* actual params */);
         replacePublicSymbol(name, craftInvokerFunction(name, invokerArgsArray, null /* no class 'this'*/, rawInvoker, fn), argCount - 1);
         return [];
     });
+
+    __embind_metadata['functions'][name] = {
+        signature: rawArgTypes,
+        annotation: __embind_read_annotation(annotation)
+    };
 }
 
 var tupleRegistrations = {};
 
-function __embind_register_value_array(rawType, name, rawConstructor, rawDestructor) {
+function __embind_register_value_array(rawType, name, rawConstructor, rawDestructor, annotation) {
+    name = readLatin1String(name);
+    
     tupleRegistrations[rawType] = {
-        name: readLatin1String(name),
+        name: name,
         rawConstructor: FUNCTION_TABLE[rawConstructor],
         rawDestructor: FUNCTION_TABLE[rawDestructor],
         elements: [],
+    };
+    
+    __embind_metadata['value_arrays'][name] = {
+        type: rawType,
+        elements: [],
+        annotation: __embind_read_annotation(annotation)
     };
 }
 
@@ -654,7 +684,8 @@ function __embind_register_value_array_element(
     getterContext,
     setterArgumentType,
     setter,
-    setterContext
+    setterContext,
+    annotation
 ) {
     tupleRegistrations[rawTupleType].elements.push({
         getterReturnType: getterReturnType,
@@ -663,6 +694,10 @@ function __embind_register_value_array_element(
         setterArgumentType: setterArgumentType,
         setter: FUNCTION_TABLE[setter],
         setterContext: setterContext,
+    });
+    
+    __embind_metadata['value_arrays'][tupleRegistrations[rawTupleType].name]['elements'].push({
+        annotation: __embind_read_annotation(annotation)
     });
 }
 
@@ -729,13 +764,22 @@ function __embind_register_value_object(
     rawType,
     name,
     rawConstructor,
-    rawDestructor
+    rawDestructor,
+    annotation
 ) {
+    name = readLatin1String(name);
+
     structRegistrations[rawType] = {
-        name: readLatin1String(name),
+        name: name,
         rawConstructor: FUNCTION_TABLE[rawConstructor],
         rawDestructor: FUNCTION_TABLE[rawDestructor],
         fields: [],
+    };
+    
+    __embind_metadata['value_objects'][name] = {
+        type: rawType,
+        fields: {},
+        annotation: __embind_read_annotation(annotation)
     };
 }
 
@@ -747,10 +791,13 @@ function __embind_register_value_object_field(
     getterContext,
     setterArgumentType,
     setter,
-    setterContext
+    setterContext,
+    annotation
 ) {
+    fieldName = readLatin1String(fieldName);
+
     structRegistrations[structType].fields.push({
-        fieldName: readLatin1String(fieldName),
+        fieldName: fieldName,
         getterReturnType: getterReturnType,
         getter: FUNCTION_TABLE[getter],
         getterContext: getterContext,
@@ -758,6 +805,11 @@ function __embind_register_value_object_field(
         setter: FUNCTION_TABLE[setter],
         setterContext: setterContext,
     });
+    
+    __embind_metadata['value_objects'][structRegistrations[structType].name]['fields'][fieldName] = {
+        signature: [getterReturnType, setterArgumentType],
+        annotation: __embind_read_annotation(annotation)
+    };
 }
 
 function __embind_finalize_value_object(structType) {
@@ -1233,7 +1285,8 @@ function __embind_register_class(
     upcast,
     downcast,
     name,
-    rawDestructor
+    rawDestructor,
+    annotation
 ) {
     name = readLatin1String(name);
     rawDestructor = FUNCTION_TABLE[rawDestructor];
@@ -1323,6 +1376,15 @@ function __embind_register_class(
             return [referenceConverter, pointerConverter, constPointerConverter];
         }
     );
+    
+    __embind_metadata['classes'][name] = {
+        type: rawType,
+        constructors: [],
+        functions: {},
+        class_functions: {},
+        properties: {},
+        annotation: __embind_read_annotation(annotation)
+    };
 }
 
 function __embind_register_class_constructor(
@@ -1330,7 +1392,8 @@ function __embind_register_class_constructor(
     argCount,
     rawArgTypesAddr,
     invoker,
-    rawConstructor
+    rawConstructor,
+    annotation
 ) {
     var rawArgTypes = heap32VectorToArray(argCount, rawArgTypesAddr);
     invoker = FUNCTION_TABLE[invoker];
@@ -1348,6 +1411,11 @@ function __embind_register_class_constructor(
         classType.registeredClass.constructor_body[argCount - 1] = function() {
             throwUnboundTypeError('Cannot construct ' + classType.name + ' due to unbound types', rawArgTypes);
         };
+
+        __embind_metadata['classes'][classType.name]['constructors'].push({
+            signature: rawArgTypes,
+            annotation: __embind_read_annotation(annotation)
+        });
 
         whenDependentTypesAreResolved([], rawArgTypes, function(argTypes) {
             classType.registeredClass.constructor_body[argCount - 1] = function() {
@@ -1419,7 +1487,8 @@ function __embind_register_class_function(
     argCount,
     rawArgTypesAddr, // [ReturnType, ThisType, Args...]
     rawInvoker,
-    context
+    context,
+    annotation
 ) {
     var rawArgTypes = heap32VectorToArray(argCount, rawArgTypesAddr);
     methodName = readLatin1String(methodName);
@@ -1446,6 +1515,11 @@ function __embind_register_class_function(
             proto[methodName].overloadTable[argCount-2] = unboundTypesHandler;
         }
 
+        __embind_metadata['classes'][classType.name]['functions'][methodName] = {
+            signature: rawArgTypes,
+            annotation: __embind_read_annotation(annotation)
+        };
+
         whenDependentTypesAreResolved([], rawArgTypes, function(argTypes) {
         
             var memberFunction = craftInvokerFunction(humanName, argTypes, classType, rawInvoker, context);
@@ -1470,7 +1544,8 @@ function __embind_register_class_class_function(
     argCount,
     rawArgTypesAddr,
     rawInvoker,
-    fn
+    fn,
+    annotation
 ) {
     var rawArgTypes = heap32VectorToArray(argCount, rawArgTypesAddr);
     methodName = readLatin1String(methodName);
@@ -1493,6 +1568,11 @@ function __embind_register_class_class_function(
             ensureOverloadTable(proto, methodName, humanName);
             proto[methodName].overloadTable[argCount-1] = unboundTypesHandler;
         }
+
+        __embind_metadata['classes'][classType.name]['class_functions'][methodName] = {
+            signature: rawArgTypes,
+            annotation: __embind_read_annotation(annotation)
+        };
 
         whenDependentTypesAreResolved([], rawArgTypes, function(argTypes) {
             // Replace the initial unbound-types-handler stub with the proper function. If multiple overloads are registered,
@@ -1518,7 +1598,8 @@ function __embind_register_class_property(
     getterContext,
     setterArgumentType,
     setter,
-    setterContext
+    setterContext,
+    annotation
 ) {
     fieldName = readLatin1String(fieldName);
     getter = FUNCTION_TABLE[getter];
@@ -1544,6 +1625,11 @@ function __embind_register_class_property(
         }
 
         Object.defineProperty(classType.registeredClass.instancePrototype, fieldName, desc);
+
+        __embind_metadata['classes'][classType.name]['properties'][fieldName] = {
+            signature: [getterReturnType, setterArgumentType],
+            annotation: __embind_read_annotation(annotation)
+        };
 
         whenDependentTypesAreResolved(
             [],
@@ -1597,7 +1683,8 @@ function __embind_register_smart_ptr(
     rawGetPointee,
     rawConstructor,
     rawShare,
-    rawDestructor
+    rawDestructor,
+    annotation
 ) {
     name = readLatin1String(name);
     rawGetPointee = FUNCTION_TABLE[rawGetPointee];
@@ -1623,11 +1710,18 @@ function __embind_register_smart_ptr(
             rawDestructor);
         return [registeredPointer];
     });
+
+    __embind_metadata['smart_ptrs'][name] = {
+        type: rawType,
+        pointeeType: rawPointeeType,
+        annotation: __embind_read_annotation(annotation)
+    };
 }
 
 function __embind_register_enum(
     rawType,
-    name
+    name,
+    annotation
 ) {
     name = readLatin1String(name);
 
@@ -1647,12 +1741,19 @@ function __embind_register_enum(
         destructorFunction: null,
     });
     exposePublicSymbol(name, constructor);
+
+    __embind_metadata['enums'][name] = {
+        type: rawType,
+        values: [],
+        annotation: __embind_read_annotation(annotation)
+    };
 }
 
 function __embind_register_enum_value(
     rawEnumType,
     name,
-    enumValue
+    enumValue,
+    annotation
 ) {
     var enumType = requireRegisteredType(rawEnumType, 'enum');
     name = readLatin1String(name);
@@ -1665,13 +1766,24 @@ function __embind_register_enum_value(
     });
     Enum.values[enumValue] = Value;
     Enum[name] = Value;
+    
+    __embind_metadata['enums'][enumType.name]['values'].push({
+        name: name,
+        value: enumValue,
+        annotation: __embind_read_annotation(annotation)
+    });
 }
 
-function __embind_register_constant(name, type, value) {
+function __embind_register_constant(name, type, value, annotation) {
     name = readLatin1String(name);
     whenDependentTypesAreResolved([], [type], function(type) {
         type = type[0];
         Module[name] = type['fromWireType'](value);
         return [];
     });
+    
+    __embind_metadata['constants'][name] = {
+        type: type,
+        annotation: __embind_read_annotation(annotation)
+    };
 }
