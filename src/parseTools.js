@@ -1478,7 +1478,7 @@ function getFastValue(a, op, b, type) {
         if ((isNumber(a) && Math.abs(a) < TWO_TWENTY) || (isNumber(b) && Math.abs(b) < TWO_TWENTY) || (bits < 32 && !ASM_JS)) {
           return '(((' + a + ')*(' + b + '))&' + ((Math.pow(2, bits)-1)|0) + ')'; // keep a non-eliminatable coercion directly on this
         }
-        return '(Math.imul(' + a + ',' + b + ')|0)';
+        return "(Math['imul'](" + a + ',' + b + ")|0)";
       }
     } else {
       if (a == '0') {
