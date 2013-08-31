@@ -1555,20 +1555,6 @@ module({
             impl.delete();
         });
 
-        test("implement can call other members in js code", function() {
-            var impl = cm.AbstractClass.implement({
-                count: 0,
-                abstractMethod: function() {
-                    this.count += 1;
-                }
-            });
-            impl.abstractMethod();
-            assert.equal(1, impl.count);
-
-            impl.delete();
-            // Let the memory leak test superfixture check that no leaks occurred.
-        });
-
         test("can implement optional methods in JavaScript", function() {
             var expected = "my JS string";
             function MyImplementation() {
