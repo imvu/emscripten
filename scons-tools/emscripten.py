@@ -116,11 +116,12 @@ def emscripten(env, target_js, source_bc, filename_suffix='', buildIter=True, bu
         '--jscomp_off', 'globalThis',
     ]
 
-    [iter_global_emscripten_js] = env.Concatenate(
-        buildName('iter.js'),
-        [ prejs,
-          raw_emscripten_js,
-          env['EMSCRIPTEN_POSTJS'] ])
+    if buildIter:
+        [iter_global_emscripten_js] = env.Concatenate(
+            buildName('iter.js'),
+            [ prejs,
+              raw_emscripten_js,
+              env['EMSCRIPTEN_POSTJS'] ])
 
     [global_cc_emscripten_js] = env.ClosureCompiler(
         buildName('global.closure.js'),
@@ -147,9 +148,12 @@ def emscripten(env, target_js, source_bc, filename_suffix='', buildIter=True, bu
     else:
         global_emscripten_min_js = None
 
-    [emscripten_iteration_js] = env.WrapInModule(
-        buildName('iteration.js'),
-        iter_global_emscripten_js)
+    if buildIter:
+        [emscripten_iteration_js] = env.WrapInModule(
+            buildName('iteration.js'),
+            iter_global_emscripten_js)
+    else:
+        emscripten_iteration_js = None
 
     [emscripten_js] = env.WrapInModule(
         buildName('debug.js'),
