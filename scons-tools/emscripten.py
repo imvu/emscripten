@@ -65,13 +65,13 @@ EmscriptenScanner = Scanner(
     name='emscripten',
     function=depend_on_emscripten)
 
-def setExtension(filename, filename_suffix, extension):
-    return os.path.splitext(filename)[0] + filename_suffix + '.' + extension
+def setExtension(filename, extension):
+    return os.path.splitext(filename)[0] + '.' + extension
 
-def emscripten(env, target_js, source_bc, filename_suffix='', buildIter=True, buildMin=True):
+def emscripten(env, target_js, source_bc):
     env = env.Clone()
     def buildName(extension):
-        return setExtension(target_js, filename_suffix, extension)
+        return setExtension(target_js, extension)
 
     # for debugging and reading generated code.
     # not in critical path, uses spare cores.
@@ -116,12 +116,11 @@ def emscripten(env, target_js, source_bc, filename_suffix='', buildIter=True, bu
         '--jscomp_off', 'globalThis',
     ]
 
-    if buildIter:
-        [iter_global_emscripten_js] = env.Concatenate(
-            buildName('iter.js'),
-            [ prejs,
-              raw_emscripten_js,
-              env['EMSCRIPTEN_POSTJS'] ])
+    [iter_global_emscripten_js] = env.Concatenate(
+        buildName('iter.js'),
+        [ prejs,
+          raw_emscripten_js,
+          env['EMSCRIPTEN_POSTJS'] ])
 
     [global_cc_emscripten_js] = env.ClosureCompiler(
         buildName('global.closure.js'),
@@ -135,36 +134,27 @@ def emscripten(env, target_js, source_bc, filename_suffix='', buildIter=True, bu
     #    buildName('global.uglify.js'),
     #    concatenated_js)
 
-    if buildMin:
-        [closure_js] = env.ClosureCompiler(
-            buildName('closure.js'),
-            concatenated_js,
-            CLOSURE_FLAGS=['--language_in', 'ECMASCRIPT5']+DISABLE_EMSCRIPTEN_WARNINGS+['--formatting', 'PRETTY_PRINT', '--compilation_level', 'ADVANCED_OPTIMIZATIONS'])
-        
-        [global_emscripten_min_js] = env.JSOptimizer(
-            buildName('global.min.js'),
-            closure_js,
-            JS_OPTIMIZER_PASSES=['last'])
-    else:
-        global_emscripten_min_js = None
+    [closure_js] = env.ClosureCompiler(
+        buildName('closure.js'),
+        concatenated_js,
+        CLOSURE_FLAGS=['--language_in', 'ECMASCRIPT5']+DISABLE_EMSCRIPTEN_WARNINGS+['--formatting', 'PRETTY_PRINT', '--compilation_level', 'ADVANCED_OPTIMIZATIONS'])
 
-    if buildIter:
-        [emscripten_iteration_js] = env.WrapInModule(
-            buildName('iteration.js'),
-            iter_global_emscripten_js)
-    else:
-        emscripten_iteration_js = None
+    [global_emscripten_min_js] = env.JSOptimizer(
+        buildName('global.min.js'),
+        closure_js,
+        JS_OPTIMIZER_PASSES=['last'])
+
+    [emscripten_iteration_js] = env.WrapInModule(
+        buildName('iteration.js'),
+        iter_global_emscripten_js)
 
     [emscripten_js] = env.WrapInModule(
         buildName('debug.js'),
         global_cc_emscripten_js)
 
-    if buildMin:
-        [emscripten_min_js] = env.WrapInModule(
-            buildName('min.js'),
-            global_emscripten_min_js)
-    else:
-        emscripten_min_js = None
+    [emscripten_min_js] = env.WrapInModule(
+        buildName('min.js'),
+        global_emscripten_min_js)
 
     return [emscripten_iteration_js, emscripten_js, emscripten_min_js]
 
