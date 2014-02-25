@@ -120,7 +120,6 @@ var LibraryGLFW = {
       if (event.charCode) {
         var char = GLFW.getUnicodeChar(event.charCode);
         if (char !== null && GLFW.charFunc) {
-          event.preventDefault();
           Runtime.dynCall('vii', GLFW.charFunc, [event.charCode, 1]);
         }
       }
@@ -130,13 +129,18 @@ var LibraryGLFW = {
       var key = GLFW.DOMToGLFWKeyCode(event.keyCode);
       if (key && GLFW.keyFunc) {
         GLFW.keys[key] = status;
-        event.preventDefault();
         Runtime.dynCall('vii', GLFW.keyFunc, [key, status]);
       }
     },
 
     onKeydown: function(event) {
       GLFW.onKeyChanged(event, 1);//GLFW_PRESS
+      // This logic comes directly from the sdl implementation. We cannot
+      // call preventDefault on all keydown events otherwise onKeyPress will
+      // not get called
+      if (event.keyCode === 8 /* backspace */ || event.keyCode === 9 /* tab */) {
+        event.preventDefault();
+      }
     },
 
     onKeyup: function(event) {
@@ -193,13 +197,7 @@ var LibraryGLFW = {
     },
 
     onMouseWheel: function(event) {
-      if (event.detail > 0) {
-        GLFW.wheelPos++;
-      }
-
-      if (event.detail < 0) {
-        GLFW.wheelPos--;
-      }
+      GLFW.wheelPos += Browser.getMouseWheelDelta(event);
 
       if (GLFW.mouseWheelFunc && event.target == Module["canvas"]) {
         Runtime.dynCall('vi', GLFW.mouseWheelFunc, [GLFW.wheelPos]);
@@ -354,7 +352,12 @@ var LibraryGLFW = {
       throw "Invalid glfwOpenWindow mode.";
     }
 
-    Module.ctx = Browser.createContext(Module['canvas'], true, true);
+    var contextAttributes = {
+      antialias: (GLFW.params[0x00020013] > 1), //GLFW_FSAA_SAMPLES
+      depth: (GLFW.params[0x00020009] > 0), //GLFW_DEPTH_BITS
+      stencil: (GLFW.params[0x0002000A] > 0) //GLFW_STENCIL_BITS
+    }
+    Module.ctx = Browser.createContext(Module['canvas'], true, true, contextAttributes);
     return 1; //GL_TRUE
   },
 

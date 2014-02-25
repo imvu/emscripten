@@ -4,7 +4,9 @@
 *.bc
 src/relooper*.js
 
-# Ignore generated files 
+node_modules/
+
+# Ignore generated files
 src/relooper.js
 src/relooper.js.raw.js
 src/relooper/*.o
@@ -16,3 +18,4 @@ tests/freetype/objs/*.lo
 
 third_party/lzma.js/lzip/*.o
 third_party/lzma.js/lzma-native
+third_party/lzma.js/lzma-native.exe

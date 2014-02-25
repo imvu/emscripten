@@ -57,20 +57,18 @@ struct Block {
   BlockBranchMap ProcessedBranchesOut;
   BlockSet ProcessedBranchesIn;
   Shape *Parent; // The shape we are directly inside
-  int Id; // A unique identifier
+  int Id; // A unique identifier, defined when added to relooper. Note that this uniquely identifies a *logical* block - if we split it, the two instances have the same content *and* the same Id
   const char *Code; // The string representation of the code in this block. Owning pointer (we copy the input)
+  const char *BranchVar; // If we have more than one branch out, the variable whose value determines where we go
   bool IsCheckedMultipleEntry; // If true, we are a multiple entry, so reaching us requires setting the label variable
 
-  Block(const char *CodeInit);
+  Block(const char *CodeInit, const char *BranchVarInit);
   ~Block();
 
   void AddBranchTo(Block *Target, const char *Condition, const char *Code=NULL);
 
   // Prints out the instructions code and branchings
   void Render(bool InLoop);
-
-  // INTERNAL
-  static int IdCounter;
 };
 
 // Represents a structured control flow shape, one of
@@ -91,24 +89,26 @@ struct Block {
 //            setjmp returns, etc.)
 //
 
-class SimpleShape;
-class LabeledShape;
-class MultipleShape;
-class LoopShape;
+struct SimpleShape;
+struct LabeledShape;
+struct MultipleShape;
+struct LoopShape;
+struct EmulatedShape;
 
 struct Shape {
-  int Id; // A unique identifier. Used to identify loops, labels are Lx where x is the Id.
+  int Id; // A unique identifier. Used to identify loops, labels are Lx where x is the Id. Defined when added to relooper
   Shape *Next; // The shape that will appear in the code right after this one
   Shape *Natural; // The shape that control flow gets to naturally (if there is Next, then this is Next)
 
   enum ShapeType {
     Simple,
     Multiple,
-    Loop
+    Loop,
+    Emulated
   };
   ShapeType Type;
 
-  Shape(ShapeType TypeInit) : Id(Shape::IdCounter++), Next(NULL), Type(TypeInit) {}
+  Shape(ShapeType TypeInit) : Id(-1), Next(NULL), Type(TypeInit) {}
   virtual ~Shape() {}
 
   virtual void Render(bool InLoop) = 0;
@@ -117,9 +117,7 @@ struct Shape {
   static MultipleShape *IsMultiple(Shape *It) { return It && It->Type == Multiple ? (MultipleShape*)It : NULL; }
   static LoopShape *IsLoop(Shape *It) { return It && It->Type == Loop ? (LoopShape*)It : NULL; }
   static LabeledShape *IsLabeled(Shape *It) { return IsMultiple(It) || IsLoop(It) ? (LabeledShape*)It : NULL; }
-
-  // INTERNAL
-  static int IdCounter;
+  static EmulatedShape *IsEmulated(Shape *It) { return It && It->Type == Emulated ? (EmulatedShape*)It : NULL; }
 };
 
 struct SimpleShape : public Shape {
@@ -161,12 +159,15 @@ struct LoopShape : public LabeledShape {
   void Render(bool InLoop);
 };
 
-/*
-struct EmulatedShape : public Shape {
-  std::deque<Block*> Blocks;
+// TODO EmulatedShape is only partially functional. Currently it can be used for the
+//      entire set of blocks being relooped, but not subsets.
+struct EmulatedShape : public LabeledShape {
+  Block *Entry;
+  BlockSet Blocks;
+
+  EmulatedShape() : LabeledShape(Emulated) { Labeled = true; }
   void Render(bool InLoop);
 };
-*/
 
 // Implements the relooper algorithm for a function's blocks.
 //
@@ -183,11 +184,14 @@ struct Relooper {
   std::deque<Block*> Blocks;
   std::deque<Shape*> Shapes;
   Shape *Root;
+  bool Emulate;
+  int BlockIdCounter;
+  int ShapeIdCounter;
 
   Relooper();
   ~Relooper();
 
-  void AddBlock(Block *New);
+  void AddBlock(Block *New, int Id=-1);
 
   // Calculates the shapes
   void Calculate(Block *Entry);
@@ -196,13 +200,21 @@ struct Relooper {
   void Render();
 
   // Sets the global buffer all printing goes to. Must call this or MakeOutputBuffer.
+  // XXX: this is deprecated, see MakeOutputBuffer
   static void SetOutputBuffer(char *Buffer, int Size);
 
-  // Creates an output buffer. Must call this or SetOutputBuffer.
+  // Creates an internal output buffer. Must call this or SetOutputBuffer. Size is
+  // a hint for the initial size of the buffer, it can be resized later one demand.
+  // For that reason this is more recommended than SetOutputBuffer.
   static void MakeOutputBuffer(int Size);
+
+  static char *GetOutputBuffer();
 
   // Sets asm.js mode on or off (default is off)
   static void SetAsmJSMode(int On);
+
+  // Sets whether we must emulate everything with switch-loop code
+  void SetEmulate(int E) { Emulate = E; }
 };
 
 typedef std::map<Block*, BlockSet> BlockBlockSetMap;
@@ -235,7 +247,7 @@ extern "C" {
 RELOOPERDLL_API void  rl_set_output_buffer(char *buffer, int size);
 RELOOPERDLL_API void  rl_make_output_buffer(int size);
 RELOOPERDLL_API void  rl_set_asm_js_mode(int on);
-RELOOPERDLL_API void *rl_new_block(const char *text);
+RELOOPERDLL_API void *rl_new_block(const char *text, const char *branch_var);
 RELOOPERDLL_API void  rl_delete_block(void *block);
 RELOOPERDLL_API void  rl_block_add_branch_to(void *from, void *to, const char *condition, const char *code);
 RELOOPERDLL_API void *rl_new_relooper();

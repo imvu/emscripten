@@ -1,9 +1,6 @@
 
-;;; trunc i32 into i24, needs $0 on target variable name
-
-; ModuleID = '/tmp/tmpvqlBv2/a.out.bc'
-target datalayout = "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f32:32:32-f64:32:64-v64:64:64-v128:128:128-a0:0:64-f80:32:32-n8:16:32-S128"
-target triple = "i386-pc-linux-gnu"
+target datalayout = "e-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-p:32:32:32-v128:32:32"
+target triple = "le32-unknown-nacl"
 
 %union.U4 = type { i32 }
 %union.U3 = type { i8* }
@@ -252,6 +249,7 @@ target triple = "i386-pc-linux-gnu"
 @g_287 = internal constant i32 -1, align 4
 
 define i32 @main(i32 %argc, i8** nocapture %argv) nounwind {
+  %msgdummy = alloca { i8*, { i64, i8* } (i8*)* } ; test for parsing of this kind of stuff, compilation-only test
   %p_6.i.i = alloca %union.U3, align 8
   %1 = icmp eq i32 %argc, 2
   br i1 %1, label %2, label %7
@@ -549,7 +547,8 @@ safe_mod_func_uint32_t_u_u.exit.i.i:              ; preds = %189, %.preheader..p
   %p_5.sroa.0.0.extract.trunc2674116.i.i = phi i8 [ %p_5.sroa.0.0.extract.trunc2670.i.i, %189 ], [ -1, %.preheader..preheader.split_crit_edge.i.i ]
   %p_5.sroa.1.sroa.0.0.load6982115.i.i = phi i24 [ %p_5.sroa.1.sroa.0.0.load6978.i.i, %189 ], [ -1, %.preheader..preheader.split_crit_edge.i.i ]
   store i16 0, i16* @g_84, align 2
-  %p_5.sroa.1.1.insert.ext36.i.i = trunc i24 %p_5.sroa.1.sroa.0.0.load6982115.i.i to i16
+  %adddd = add i24 %p_5.sroa.1.sroa.0.0.load6982115.i.i, 1 ; test i24 add
+  %p_5.sroa.1.1.insert.ext36.i.i = trunc i24 %adddd to i16
   %p_5.sroa.1.1.insert.shift37.i.i = shl i16 %p_5.sroa.1.1.insert.ext36.i.i, 8
   %p_5.sroa.0.0.insert.ext10.i.i = zext i8 %p_5.sroa.0.0.extract.trunc2674116.i.i to i16
   %p_5.sroa.0.0.insert.insert12.i.i = or i16 %p_5.sroa.1.1.insert.shift37.i.i, %p_5.sroa.0.0.insert.ext10.i.i

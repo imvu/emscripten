@@ -11,9 +11,9 @@ def path_from_root(*pathelems):
 
 JS_OPTIMIZER = path_from_root('tools', 'js-optimizer.js')
 
-NUM_CHUNKS_PER_CORE = 1.5
-MIN_CHUNK_SIZE = int(os.environ.get('EMCC_JSOPT_MIN_CHUNK_SIZE') or 1024*1024) # configuring this is just for debugging purposes
-MAX_CHUNK_SIZE = 20*1024*1024
+NUM_CHUNKS_PER_CORE = 3
+MIN_CHUNK_SIZE = int(os.environ.get('EMCC_JSOPT_MIN_CHUNK_SIZE') or 512*1024) # configuring this is just for debugging purposes
+MAX_CHUNK_SIZE = 5*1024*1024
 
 WINDOWS = sys.platform.startswith('win')
 
@@ -24,42 +24,16 @@ import_sig = re.compile('var ([_\w$]+) *=[^;]+;')
 
 class Minifier:
   '''
-    asm.js minification support. We calculate possible names and minification of
+    asm.js minification support. We calculate minification of
     globals here, then pass that into the parallel js-optimizer.js runners which
-    during registerize perform minification of locals.
+    perform minification of locals.
   '''
 
   def __init__(self, js, js_engine):
     self.js = js
     self.js_engine = js_engine
 
-    # Create list of valid short names
-
-    MAX_NAMES = 80000
-    INVALID_2 = set(['do', 'if', 'in'])
-    INVALID_3 = set(['for', 'new', 'try', 'var', 'env', 'let'])
-
-    self.names = []
-    init_possibles = string.ascii_letters + '_$'
-    later_possibles = init_possibles + string.digits
-    for a in init_possibles:
-      if len(self.names) >= MAX_NAMES: break
-      self.names.append(a)
-    for a in init_possibles:
-      for b in later_possibles:
-        if len(self.names) >= MAX_NAMES: break
-        curr = a + b
-        if curr not in INVALID_2: self.names.append(curr)
-    for a in init_possibles:
-      for b in later_possibles:
-        for c in later_possibles:
-          if len(self.names) >= MAX_NAMES: break
-          curr = a + b + c
-          if curr not in INVALID_3: self.names.append(curr)
-    #print >> sys.stderr, self.names
-
   def minify_shell(self, shell, minify_whitespace, source_map=False):
-    #print >> sys.stderr, "MINIFY SHELL 1111111111", shell, "\n222222222222222"
     # Run through js-optimizer.js to find and minify the global symbols
     # We send it the globals, which it parses at the proper time. JS decides how
     # to minify all global names, we receive a dictionary back, which is then
@@ -74,7 +48,7 @@ class Minifier:
     f = open(temp_file, 'w')
     f.write(shell)
     f.write('\n')
-    f.write('// EXTRA_INFO:' + self.serialize())
+    f.write('// EXTRA_INFO:' + json.dumps(self.serialize()))
     f.close()
 
     output = subprocess.Popen(self.js_engine +
@@ -91,10 +65,9 @@ class Minifier:
 
 
   def serialize(self):
-    return json.dumps({
-      'names': self.names,
+    return {
       'globals': self.globs
-    })
+    }
 
 start_funcs_marker = '// EMSCRIPTEN_START_FUNCS\n'
 end_funcs_marker = '// EMSCRIPTEN_END_FUNCS\n'
@@ -144,9 +117,9 @@ def run_on_js(filename, passes, js_engine, jcache, source_map=False, extra_info=
 
   know_generated = suffix or start_funcs >= 0
 
-  minify_globals = 'registerizeAndMinify' in passes and 'asm' in passes
+  minify_globals = 'minifyNames' in passes and 'asm' in passes
   if minify_globals:
-    passes = map(lambda p: p if p != 'registerizeAndMinify' else 'registerize', passes)
+    passes = map(lambda p: p if p != 'minifyNames' else 'minifyLocals', passes)
     start_asm = js.find(start_asm_marker)
     end_asm = js.rfind(end_asm_marker)
     assert (start_asm >= 0) == (end_asm >= 0)
@@ -187,6 +160,7 @@ EMSCRIPTEN_FUNCS();
 ''' + js[end_funcs + len(end_funcs_marker):end_asm + len(end_asm_marker)]
       js = js[start_funcs + len(start_funcs_marker):end_funcs]
 
+      # we assume there is a maximum of one new name per line
       minifier = Minifier(js, js_engine)
       asm_shell_pre, asm_shell_post = minifier.minify_shell(asm_shell, 'minifyWhitespace' in passes, source_map).split('EMSCRIPTEN_FUNCS();');
       asm_shell_post = asm_shell_post.replace('});', '})');
@@ -205,24 +179,31 @@ EMSCRIPTEN_FUNCS();
     pre = ''
     post = ''
 
-  # Pick where to split into chunks, so that (1) they do not oom in node/uglify, and (2) we can run them in parallel
-  # If we have metadata, we split only the generated code, and save the pre and post on the side (and do not optimize them)
-  parts = map(lambda part: part, js.split('\n}\n'))
-  funcs = []
-  for i in range(len(parts)):
-    func = parts[i]
-    if i < len(parts)-1: func += '\n}\n' # last part needs no }
-    m = func_sig.search(func)
-    if m:
-      ident = m.group(2)
-    else:
-      if know_generated: continue # ignore whitespace
-      ident = 'anon_%d' % i
-    assert ident
-    funcs.append((ident, func))
-  parts = None
+  def split_funcs(js):
+    # Pick where to split into chunks, so that (1) they do not oom in node/uglify, and (2) we can run them in parallel
+    # If we have metadata, we split only the generated code, and save the pre and post on the side (and do not optimize them)
+    parts = map(lambda part: part, js.split('\n}\n'))
+    funcs = []
+    for i in range(len(parts)):
+      func = parts[i]
+      if i < len(parts)-1: func += '\n}\n' # last part needs no }
+      m = func_sig.search(func)
+      if m:
+        ident = m.group(2)
+      else:
+        if know_generated: continue # ignore whitespace
+        ident = 'anon_%d' % i
+      assert ident
+      funcs.append((ident, func))
+    return funcs
+
   total_size = len(js)
+  funcs = split_funcs(js)
   js = None
+
+  if 'last' in passes and len(funcs) > 0:
+    if max([len(func[1]) for func in funcs]) > 200000:
+      print >> sys.stderr, 'warning: Output contains some very large functions, consider using OUTLINING_LIMIT to break them up (see settings.js)'
 
   # if we are making source maps, we want our debug numbering to start from the
   # top of the file, so avoid breaking the JS into chunks
@@ -231,6 +212,7 @@ EMSCRIPTEN_FUNCS();
   chunk_size = min(MAX_CHUNK_SIZE, max(MIN_CHUNK_SIZE, total_size / intended_num_chunks))
 
   chunks = shared.chunkify(funcs, chunk_size, jcache.get_cachename('jsopt') if jcache else None)
+  funcs = None
 
   if jcache:
     # load chunks from cache where we can # TODO: ignore small chunks
@@ -256,9 +238,12 @@ EMSCRIPTEN_FUNCS();
       f.write(chunk)
       f.write(suffix_marker)
       if minify_globals:
-        assert not extra_info
+        if extra_info:
+          for key, value in extra_info.iteritems():
+            assert key not in minify_info or value == minify_info[key], [key, value, minify_info[key]]
+            minify_info[key] = value
         f.write('\n')
-        f.write('// EXTRA_INFO:' + minify_info)
+        f.write('// EXTRA_INFO:' + json.dumps(minify_info))
       elif extra_info:
         f.write('\n')
         f.write('// EXTRA_INFO:' + json.dumps(extra_info))
@@ -317,9 +302,25 @@ EMSCRIPTEN_FUNCS();
   filename += '.jo.js'
   f = open(filename, 'w')
   f.write(pre);
+  pre = None
+
+  # sort functions by size, to make diffing easier and to improve aot times
+  funcses = []
   for out_file in filenames:
-    f.write(open(out_file).read())
-    f.write('\n')
+    funcses.append(split_funcs(open(out_file).read()))
+  funcs = [item for sublist in funcses for item in sublist]
+  funcses = None
+  def sorter(x, y):
+    diff = len(y[1]) - len(x[1])
+    if diff != 0: return diff
+    if x[0] < y[0]: return 1
+    elif x[0] > y[0]: return -1
+    return 0
+  funcs.sort(sorter)
+  for func in funcs:
+    f.write(func[1])
+  funcs = None
+  f.write('\n')
   if jcache:
     for cached in cached_outputs:
       f.write(cached); # TODO: preserve order
@@ -340,6 +341,18 @@ EMSCRIPTEN_FUNCS();
 
   return filename
 
-def run(filename, passes, js_engine, jcache, source_map=False, extra_info=None):
+def run(filename, passes, js_engine=shared.NODE_JS, jcache=False, source_map=False, extra_info=None):
+  js_engine = shared.listify(js_engine)
   return temp_files.run_and_clean(lambda: run_on_js(filename, passes, js_engine, jcache, source_map, extra_info))
+
+if __name__ == '__main__':
+  last = sys.argv[-1]
+  if '{' in last:
+    extra_info = json.loads(last)
+    sys.argv = sys.argv[:-1]
+  else:
+    extra_info = None
+  out = run(sys.argv[1], sys.argv[2:], extra_info=extra_info)
+  import shutil
+  shutil.copyfile(out, sys.argv[1] + '.jsopt.js')
 

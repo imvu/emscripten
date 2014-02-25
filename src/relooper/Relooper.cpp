@@ -1,3 +1,7 @@
+// We are implementing the Relooper C API, so always export from this file.
+#ifndef RELOOPERDLL_EXPORTS
+#define RELOOPERDLL_EXPORTS
+#endif
 
 #include "Relooper.h"
 
@@ -6,9 +10,12 @@
 #include <list>
 #include <stack>
 
+#if EMSCRIPTEN
 #include "ministring.h"
-
-// TODO: move all set to unorderedset
+#else
+#include <string>
+typedef std::string ministring;
+#endif
 
 template <class T, class U> bool contains(const T& container, const U& contained) {
   return container.find(contained) != container.end();
@@ -37,27 +44,56 @@ static void PutIndented(const char *String);
 static char *OutputBufferRoot = NULL;
 static char *OutputBuffer = NULL;
 static int OutputBufferSize = 0;
+static int OutputBufferOwned = false;
+
+static int LeftInOutputBuffer() {
+  return OutputBufferSize - (OutputBuffer - OutputBufferRoot);
+}
+
+static bool EnsureOutputBuffer(int Needed) { // ensures the output buffer is sufficient. returns true is no problem happened
+  Needed++; // ensure the trailing \0 is not forgotten
+  int Left = LeftInOutputBuffer();
+  if (!OutputBufferOwned) {
+    assert(Needed < Left);
+  } else {
+    // we own the buffer, and can resize if necessary
+    if (Needed >= Left) {
+      int Offset = OutputBuffer - OutputBufferRoot;
+      int TotalNeeded = OutputBufferSize + Needed - Left + 10240;
+      int NewSize = OutputBufferSize;
+      while (NewSize < TotalNeeded) NewSize = NewSize + (NewSize/2);
+      //printf("resize %d => %d\n", OutputBufferSize, NewSize);
+      OutputBufferRoot = (char*)realloc(OutputBufferRoot, NewSize);
+      OutputBuffer = OutputBufferRoot + Offset;
+      OutputBufferSize = NewSize;
+      return false;
+    }
+  }
+  return true;
+}
 
 void PrintIndented(const char *Format, ...) {
   assert(OutputBuffer);
-  assert(OutputBuffer + Indenter::CurrIndent*INDENTATION - OutputBufferRoot < OutputBufferSize);
+  EnsureOutputBuffer(Indenter::CurrIndent*INDENTATION);
   for (int i = 0; i < Indenter::CurrIndent*INDENTATION; i++, OutputBuffer++) *OutputBuffer = ' ';
-  va_list Args;
-  va_start(Args, Format);
-  int left = OutputBufferSize - (OutputBuffer - OutputBufferRoot);
-  int written = vsnprintf(OutputBuffer, left, Format, Args);
-  assert(written < left);
-  OutputBuffer += written;
-  va_end(Args);
+  int Written;
+  while (1) { // write and potentially resize buffer until we have enough room
+    int Left = LeftInOutputBuffer();
+    va_list Args;
+    va_start(Args, Format);
+    Written = vsnprintf(OutputBuffer, Left, Format, Args);
+    va_end(Args);
+    if (EnsureOutputBuffer(Written)) break;
+  }
+  OutputBuffer += Written;
 }
 
 void PutIndented(const char *String) {
   assert(OutputBuffer);
-  assert(OutputBuffer + Indenter::CurrIndent*INDENTATION - OutputBufferRoot < OutputBufferSize);
+  EnsureOutputBuffer(Indenter::CurrIndent*INDENTATION);
   for (int i = 0; i < Indenter::CurrIndent*INDENTATION; i++, OutputBuffer++) *OutputBuffer = ' ';
-  int left = OutputBufferSize - (OutputBuffer - OutputBufferRoot);
-  int needed = strlen(String)+1;
-  assert(needed < left);
+  int Needed = strlen(String)+1;
+  EnsureOutputBuffer(Needed);
   strcpy(OutputBuffer, String);
   OutputBuffer += strlen(String);
   *OutputBuffer++ = '\n';
@@ -68,11 +104,7 @@ static int AsmJS = 0;
 
 // Indenter
 
-#if EMSCRIPTEN
 int Indenter::CurrIndent = 1;
-#else
-int Indenter::CurrIndent = 0;
-#endif
 
 // Branch
 
@@ -102,14 +134,14 @@ void Branch::Render(Block *Target, bool SetLabel) {
 
 // Block
 
-int Block::IdCounter = 1; // 0 is reserved for clearings
-
-Block::Block(const char *CodeInit) : Parent(NULL), Id(Block::IdCounter++), IsCheckedMultipleEntry(false) {
+Block::Block(const char *CodeInit, const char *BranchVarInit) : Parent(NULL), Id(-1), IsCheckedMultipleEntry(false) {
   Code = strdup(CodeInit);
+  BranchVar = BranchVarInit ? strdup(BranchVarInit) : NULL;
 }
 
 Block::~Block() {
   if (Code) free((void*)Code);
+  if (BranchVar) free((void*)BranchVar);
   for (BlockBranchMap::iterator iter = ProcessedBranchesOut.begin(); iter != ProcessedBranchesOut.end(); iter++) {
     delete iter->second;
   }
@@ -141,6 +173,7 @@ void Block::Render(bool InLoop) {
   if (!ProcessedBranchesOut.size()) return;
 
   bool SetLabel = true; // in some cases it is clear we can avoid setting label, see later
+  bool ForceSetLabel = Shape::IsEmulated(Parent);
 
   // A setting of the label variable (label = x) is necessary if it can
   // cause an impact. The main case is where we set label to x, then elsewhere
@@ -189,8 +222,14 @@ void Block::Render(bool InLoop) {
   }
   assert(DefaultTarget); // Since each block *must* branch somewhere, this must be set
 
+  bool useSwitch = BranchVar != NULL;
+
+  if (useSwitch) {
+    PrintIndented("switch (%s) {\n", BranchVar);
+  }
+
   ministring RemainingConditions;
-  bool First = true;
+  bool First = !useSwitch; // when using a switch, there is no special first
   for (BlockBranchMap::iterator iter = ProcessedBranchesOut.begin();; iter++) {
     Block *Target;
     Branch *Details;
@@ -203,31 +242,44 @@ void Block::Render(bool InLoop) {
       Target = DefaultTarget;
       Details = ProcessedBranchesOut[DefaultTarget];
     }
-    bool SetCurrLabel = SetLabel && Target->IsCheckedMultipleEntry;
+    bool SetCurrLabel = (SetLabel && Target->IsCheckedMultipleEntry) || ForceSetLabel;
     bool HasFusedContent = Fused && contains(Fused->InnerMap, Target);
     bool HasContent = SetCurrLabel || Details->Type != Branch::Direct || HasFusedContent || Details->Code;
     if (iter != ProcessedBranchesOut.end()) {
       // If there is nothing to show in this branch, omit the condition
-      if (HasContent) {
-        PrintIndented("%sif (%s) {\n", First ? "" : "} else ", Details->Condition);
-        First = false;
+      if (useSwitch) {
+        PrintIndented("%s {\n", Details->Condition);
       } else {
-        if (RemainingConditions.size() > 0) RemainingConditions += " && ";
-        RemainingConditions += "!(";
-        RemainingConditions += Details->Condition;
-        RemainingConditions += ")";
+        if (HasContent) {
+          PrintIndented("%sif (%s) {\n", First ? "" : "} else ", Details->Condition);
+          First = false;
+        } else {
+          if (RemainingConditions.size() > 0) RemainingConditions += " && ";
+          RemainingConditions += "!(";
+          if (BranchVar) {
+            RemainingConditions += BranchVar;
+            RemainingConditions += " == ";
+          }
+          RemainingConditions += Details->Condition;
+          RemainingConditions += ")";
+        }
       }
     } else {
-      if (HasContent) {
-        if (RemainingConditions.size() > 0) {
-          if (First) {
-            PrintIndented("if (%s) {\n", RemainingConditions.c_str());
-            First = false;
-          } else {
-            PrintIndented("} else if (%s) {\n", RemainingConditions.c_str());
+      // this is the default
+      if (useSwitch) {
+        PrintIndented("default: {\n");
+      } else {
+        if (HasContent) {
+          if (RemainingConditions.size() > 0) {
+            if (First) {
+              PrintIndented("if (%s) {\n", RemainingConditions.c_str());
+              First = false;
+            } else {
+              PrintIndented("} else if (%s) {\n", RemainingConditions.c_str());
+            }
+          } else if (!First) {
+            PrintIndented("} else {\n");
           }
-        } else if (!First) {
-          PrintIndented("} else {\n");
         }
       }
     }
@@ -236,7 +288,13 @@ void Block::Render(bool InLoop) {
     if (HasFusedContent) {
       Fused->InnerMap.find(Target)->second->Render(InLoop);
     }
+    if (useSwitch && iter != ProcessedBranchesOut.end()) {
+      PrintIndented("break;\n");
+    }
     if (!First) Indenter::Unindent();
+    if (useSwitch) {
+      PrintIndented("}\n");
+    }
     if (iter == ProcessedBranchesOut.end()) break;
   }
   if (!First) PrintIndented("}\n");
@@ -245,10 +303,6 @@ void Block::Render(bool InLoop) {
     Fused->RenderLoopPostfix();
   }
 }
-
-// Shape
-
-int Shape::IdCounter = 0;
 
 // MultipleShape
 
@@ -272,12 +326,26 @@ void MultipleShape::RenderLoopPostfix() {
 
 void MultipleShape::Render(bool InLoop) {
   RenderLoopPrefix();
-  bool First = true;
+
+  // We know that blocks with the same Id were split from the same source, so their contents are identical and they are logically the same, so re-merge them here
+  typedef std::map<int, Shape*> IdShapeMap;
+  IdShapeMap IdMap;
   for (BlockShapeMap::iterator iter = InnerMap.begin(); iter != InnerMap.end(); iter++) {
+    int Id = iter->first->Id;
+    IdShapeMap::iterator Test = IdMap.find(Id);
+    if (Test != IdMap.end()) {
+      assert(Shape::IsSimple(iter->second) && Shape::IsSimple(Test->second)); // we can only merge simple blocks, something horrible has gone wrong if we see anything else
+      continue;
+    }
+    IdMap[iter->first->Id] = iter->second;
+  }
+
+  bool First = true;
+  for (IdShapeMap::iterator iter = IdMap.begin(); iter != IdMap.end(); iter++) {
     if (AsmJS) {
-      PrintIndented("%sif ((label|0) == %d) {\n", First ? "" : "else ", iter->first->Id);
+      PrintIndented("%sif ((label|0) == %d) {\n", First ? "" : "else ", iter->first);
     } else {
-      PrintIndented("%sif (label == %d) {\n", First ? "" : "else ", iter->first->Id);
+      PrintIndented("%sif (label == %d) {\n", First ? "" : "else ", iter->first);
     }
     First = false;
     Indenter::Indent();
@@ -287,7 +355,7 @@ void MultipleShape::Render(bool InLoop) {
   }
   RenderLoopPostfix();
   if (Next) Next->Render(InLoop);
-};
+}
 
 // LoopShape
 
@@ -302,18 +370,21 @@ void LoopShape::Render(bool InLoop) {
   Indenter::Unindent();
   PrintIndented("}\n");
   if (Next) Next->Render(InLoop);
-};
+}
 
-/*
 // EmulatedShape
 
 void EmulatedShape::Render(bool InLoop) {
+  PrintIndented("label = %d;\n", Entry->Id);
+  if (Labeled) {
+    PrintIndented("L%d: ", Id);
+  }
   PrintIndented("while(1) {\n");
   Indenter::Indent();
-  PrintIndented("switch(label) {\n");
+  PrintIndented("switch(label|0) {\n");
   Indenter::Indent();
-  for (int i = 0; i < Blocks.size(); i++) {
-    Block *Curr = Blocks[i];
+  for (BlockSet::iterator iter = Blocks.begin(); iter != Blocks.end(); iter++) {
+    Block *Curr = *iter;
     PrintIndented("case %d: {\n", Curr->Id);
     Indenter::Indent();
     Curr->Render(InLoop);
@@ -326,20 +397,20 @@ void EmulatedShape::Render(bool InLoop) {
   Indenter::Unindent();
   PrintIndented("}\n");
   if (Next) Next->Render(InLoop);
-};
-*/
+}
 
 // Relooper
 
-Relooper::Relooper() : Root(NULL) {
+Relooper::Relooper() : Root(NULL), Emulate(false), BlockIdCounter(1), ShapeIdCounter(0) { // block ID 0 is reserved for clearings
 }
 
 Relooper::~Relooper() {
-  for (int i = 0; i < Blocks.size(); i++) delete Blocks[i];
-  for (int i = 0; i < Shapes.size(); i++) delete Shapes[i];
+  for (unsigned i = 0; i < Blocks.size(); i++) delete Blocks[i];
+  for (unsigned i = 0; i < Shapes.size(); i++) delete Shapes[i];
 }
 
-void Relooper::AddBlock(Block *New) {
+void Relooper::AddBlock(Block *New, int Id) {
+  New->Id = Id == -1 ? BlockIdCounter++ : Id;
   Blocks.push_back(New);
 }
 
@@ -375,7 +446,7 @@ void Relooper::Calculate(Block *Entry) {
     // RAII cleanup. Without splitting, we will be forced to introduce labelled loops to allow
     // reaching the final block
     void SplitDeadEnds() {
-      int TotalCodeSize = 0;
+      unsigned TotalCodeSize = 0;
       for (BlockSet::iterator iter = Live.begin(); iter != Live.end(); iter++) {
         Block *Curr = *iter;
         TotalCodeSize += strlen(Curr->Code);
@@ -392,9 +463,8 @@ void Relooper::Calculate(Block *Entry) {
         PrintDebug("Splitting block %d\n", Original->Id);
         for (BlockSet::iterator iter = Original->BranchesIn.begin(); iter != Original->BranchesIn.end(); iter++) {
           Block *Prior = *iter;
-          Block *Split = new Block(Original->Code);
-          Parent->Blocks.push_back(Split);
-          PrintDebug("  to %d\n", Split->Id);
+          Block *Split = new Block(Original->Code, Original->BranchVar);
+          Parent->AddBlock(Split, Original->Id);
           Split->BranchesIn.insert(Prior);
           Branch *Details = Prior->BranchesOut[Original];
           Prior->BranchesOut[Split] = new Branch(Details->Condition, Details->Code);
@@ -427,7 +497,7 @@ void Relooper::Calculate(Block *Entry) {
   Pre.FindLive(Entry);
 
   // Add incoming branches from live blocks, ignoring dead code
-  for (int i = 0; i < Blocks.size(); i++) {
+  for (unsigned i = 0; i < Blocks.size(); i++) {
     Block *Curr = Blocks[i];
     if (!contains(Pre.Live, Curr)) continue;
     for (BlockBranchMap::iterator iter = Curr->BranchesOut.begin(); iter != Curr->BranchesOut.end(); iter++) {
@@ -435,7 +505,7 @@ void Relooper::Calculate(Block *Entry) {
     }
   }
 
-  Pre.SplitDeadEnds();
+  if (!Emulate) Pre.SplitDeadEnds();
 
   // Recursively process the graph
 
@@ -444,6 +514,7 @@ void Relooper::Calculate(Block *Entry) {
 
     // Add a shape to the list of shapes in this Relooper calculation
     void Notice(Shape *New) {
+      New->Id = Parent->ShapeIdCounter++;
       Parent->Shapes.push_back(New);
     }
 
@@ -500,6 +571,21 @@ void Relooper::Calculate(Block *Entry) {
       return Simple;
     }
 
+    Shape *MakeEmulated(BlockSet &Blocks, Block *Entry, BlockSet &NextEntries) {
+      PrintDebug("creating emulated block with entry #%d and everything it can reach, %d blocks\n", Entry->Id, Blocks.size());
+      EmulatedShape *Emulated = new EmulatedShape;
+      Notice(Emulated);
+      Emulated->Entry = Entry;
+      for (BlockSet::iterator iter = Blocks.begin(); iter != Blocks.end(); iter++) {
+        Block *Curr = *iter;
+        Emulated->Blocks.insert(Curr);
+        Curr->Parent = Emulated;
+        Solipsize(Curr, Branch::Continue, Emulated, Blocks);
+      }
+      Blocks.clear();
+      return Emulated;
+    }
+
     Shape *MakeLoop(BlockSet &Blocks, BlockSet& Entries, BlockSet &NextEntries) {
       // Find the inner blocks in this loop. Proceed backwards from the entries until
       // you reach a seen block, collecting as you go.
@@ -516,6 +602,16 @@ void Relooper::Calculate(Block *Entry) {
           for (BlockSet::iterator iter = Curr->BranchesIn.begin(); iter != Curr->BranchesIn.end(); iter++) {
             Queue.insert(*iter);
           }
+#if 0
+          // Add elements it leads to, if they are dead ends. There is no reason not to hoist dead ends
+          // into loops, as it can avoid multiple entries after the loop
+          for (BlockBranchMap::iterator iter = Curr->BranchesOut.begin(); iter != Curr->BranchesOut.end(); iter++) {
+            Block *Target = iter->first;
+            if (Target->BranchesIn.size() <= 1 && Target->BranchesOut.size() == 0) {
+              Queue.insert(Target);
+            }
+          }
+#endif
         }
       }
       assert(InnerBlocks.size() > 0);
@@ -801,6 +897,9 @@ void Relooper::Calculate(Block *Entry) {
         if (Entries->size() == 0) return Ret;
         if (Entries->size() == 1) {
           Block *Curr = *(Entries->begin());
+          if (Parent->Emulate) {
+            Make(MakeEmulated(Blocks, Curr, *NextEntries));
+          }
           if (Curr->BranchesIn.size() == 0) {
             // One entry, no looping ==> Simple
             Make(MakeSimple(Blocks, Curr, *NextEntries));
@@ -808,6 +907,7 @@ void Relooper::Calculate(Block *Entry) {
           // One entry, looping ==> Loop
           Make(MakeLoop(Blocks, *Entries, *NextEntries));
         }
+
         // More than one entry, try to eliminate through a Multiple groups of
         // independent blocks from an entry/ies. It is important to remove through
         // multiples as opposed to looping since the former is more performant.
@@ -975,6 +1075,8 @@ void Relooper::Calculate(Block *Entry) {
         Root = Next;
         Next = NULL;
         SHAPE_SWITCH(Root, {
+          if (Simple->Inner->BranchVar) LastLoop = NULL; // a switch clears out the loop (TODO: only for breaks, not continue)
+
           // If there is a next block, we already know at Simple creation time to make direct branches,
           // and we can do nothing more. If there is no next however, then Natural is where we will
           // go to by doing nothing, so we can potentially optimize some branches to direct.
@@ -1028,6 +1130,11 @@ void Relooper::Calculate(Block *Entry) {
           // If we are fusing a Multiple with a loop into this Simple, then visit it now
           if (Fused && Fused->NeedLoop) {
             LoopStack.push(Fused);
+          }
+          if (Simple->Inner->BranchVar) {
+            LoopStack.push(NULL); // a switch means breaks are now useless, push a dummy
+          }
+          if (Fused) {
             RECURSE_Multiple(Fused, FindLabeledLoops);
           }
           for (BlockBranchMap::iterator iter = Simple->Inner->ProcessedBranchesOut.begin(); iter != Simple->Inner->ProcessedBranchesOut.end(); iter++) {
@@ -1038,14 +1145,18 @@ void Relooper::Calculate(Block *Entry) {
               if (Details->Ancestor != LoopStack.top() && Details->Labeled) {
                 LabeledShape *Labeled = Shape::IsLabeled(Details->Ancestor);
                 Labeled->Labeled = true;
-                Details->Labeled = true;
               } else {
                 Details->Labeled = false;
               }
             }
           }
+          if (Simple->Inner->BranchVar) {
+            LoopStack.pop();
+          }
           if (Fused && Fused->NeedLoop) {
             LoopStack.pop();
+          }
+          if (Fused) {
             Next = Fused->Next;
           } else {
             Next = Root->Next;
@@ -1093,11 +1204,18 @@ void Relooper::Render() {
 void Relooper::SetOutputBuffer(char *Buffer, int Size) {
   OutputBufferRoot = OutputBuffer = Buffer;
   OutputBufferSize = Size;
+  OutputBufferOwned = false;
 }
 
 void Relooper::MakeOutputBuffer(int Size) {
+  if (OutputBufferRoot && OutputBufferSize >= Size && OutputBufferOwned) return;
   OutputBufferRoot = OutputBuffer = (char*)malloc(Size);
   OutputBufferSize = Size;
+  OutputBufferOwned = true;
+}
+
+char *Relooper::GetOutputBuffer() {
+  return OutputBufferRoot;
 }
 
 void Relooper::SetAsmJSMode(int On) {
@@ -1155,7 +1273,7 @@ VoidIntMap __blockDebugMap__; // maps block pointers in currently running code t
 
 extern "C" {
 
-void rl_set_output_buffer(char *buffer, int size) {
+RELOOPERDLL_API void rl_set_output_buffer(char *buffer, int size) {
 #if DEBUG
   printf("#include \"Relooper.h\"\n");
   printf("int main() {\n");
@@ -1165,16 +1283,16 @@ void rl_set_output_buffer(char *buffer, int size) {
   Relooper::SetOutputBuffer(buffer, size);
 }
 
-void rl_make_output_buffer(int size) {
+RELOOPERDLL_API void rl_make_output_buffer(int size) {
   Relooper::SetOutputBuffer((char*)malloc(size), size);
 }
 
-void rl_set_asm_js_mode(int on) {
+RELOOPERDLL_API void rl_set_asm_js_mode(int on) {
   Relooper::SetAsmJSMode(on);
 }
 
-void *rl_new_block(const char *text) {
-  Block *ret = new Block(text);
+RELOOPERDLL_API void *rl_new_block(const char *text, const char *branch_var) {
+  Block *ret = new Block(text, branch_var);
 #if DEBUG
   printf("  void *b%d = rl_new_block(\"// code %d\");\n", ret->Id, ret->Id);
   __blockDebugMap__[ret] = ret->Id;
@@ -1183,21 +1301,21 @@ void *rl_new_block(const char *text) {
   return ret;
 }
 
-void rl_delete_block(void *block) {
+RELOOPERDLL_API void rl_delete_block(void *block) {
 #if DEBUG
   printf("  rl_delete_block(block_map[%d]);\n", ((Block*)block)->Id);
 #endif
   delete (Block*)block;
 }
 
-void rl_block_add_branch_to(void *from, void *to, const char *condition, const char *code) {
+RELOOPERDLL_API void rl_block_add_branch_to(void *from, void *to, const char *condition, const char *code) {
 #if DEBUG
   printf("  rl_block_add_branch_to(block_map[%d], block_map[%d], %s%s%s, %s%s%s);\n", ((Block*)from)->Id, ((Block*)to)->Id, condition ? "\"" : "", condition ? condition : "NULL", condition ? "\"" : "", code ? "\"" : "", code ? code : "NULL", code ? "\"" : "");
 #endif
   ((Block*)from)->AddBranchTo((Block*)to, condition, code);
 }
 
-void *rl_new_relooper() {
+RELOOPERDLL_API void *rl_new_relooper() {
 #if DEBUG
   printf("  void *block_map[10000];\n");
   printf("  void *rl = rl_new_relooper();\n");
@@ -1205,18 +1323,18 @@ void *rl_new_relooper() {
   return new Relooper;
 }
 
-void rl_delete_relooper(void *relooper) {
+RELOOPERDLL_API void rl_delete_relooper(void *relooper) {
   delete (Relooper*)relooper;
 }
 
-void rl_relooper_add_block(void *relooper, void *block) {
+RELOOPERDLL_API void rl_relooper_add_block(void *relooper, void *block) {
 #if DEBUG
   printf("  rl_relooper_add_block(rl, block_map[%d]);\n", ((Block*)block)->Id);
 #endif
   ((Relooper*)relooper)->AddBlock((Block*)block);
 }
 
-void rl_relooper_calculate(void *relooper, void *entry) {
+RELOOPERDLL_API void rl_relooper_calculate(void *relooper, void *entry) {
 #if DEBUG
   printf("  rl_relooper_calculate(rl, block_map[%d]);\n", ((Block*)entry)->Id);
   printf("  rl_relooper_render(rl);\n");
@@ -1228,7 +1346,7 @@ void rl_relooper_calculate(void *relooper, void *entry) {
   ((Relooper*)relooper)->Calculate((Block*)entry);
 }
 
-void rl_relooper_render(void *relooper) {
+RELOOPERDLL_API void rl_relooper_render(void *relooper) {
   ((Relooper*)relooper)->Render();
 }
 

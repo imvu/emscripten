@@ -135,9 +135,12 @@ var ASSIGN_OR_ALTER = set('assign', 'unary-postfix', 'unary-prefix');
 var CONTROL_FLOW = set('do', 'while', 'for', 'if', 'switch');
 var NAME_OR_NUM = set('name', 'num');
 var ASSOCIATIVE_BINARIES = set('+', '*', '|', '&', '^');
+var ALTER_FLOW = set('break', 'continue', 'return');
 
 var BREAK_CAPTURERS = set('do', 'while', 'for', 'switch');
 var CONTINUE_CAPTURERS = LOOP;
+
+var FUNCTIONS_THAT_ALWAYS_THROW = set('abort', '___resumeException', '___cxa_throw', '___cxa_rethrow');
 
 var NULL_NODE = ['name', 'null'];
 var UNDEFINED_NODE = ['unary-prefix', 'void', ['num', 0]];
@@ -213,16 +216,6 @@ function traverse(node, pre, post, stack) {
 }
 
 // Only walk through the generated functions
-function traverseGenerated(ast, pre, post, stack) {
-  assert(generatedFunctions);
-  traverse(ast, function(node) {
-    if (node[0] === 'defun') {
-      traverse(node, pre, post, stack);
-      return null;
-    }
-  });
-}
-
 function traverseGeneratedFunctions(ast, callback) {
   assert(generatedFunctions);
   if (ast[0] === 'toplevel') {
@@ -234,6 +227,12 @@ function traverseGeneratedFunctions(ast, callback) {
   } else if (ast[0] === 'defun') {
     callback(ast);
   }
+}
+
+function traverseGenerated(ast, pre, post, stack) {
+  traverseGeneratedFunctions(ast, function(func) {
+    traverse(func, pre, post, stack);
+  });
 }
 
 // Walk the ast in a simple way, with an understanding of which JS variables are defined)
@@ -268,6 +267,16 @@ function emptyNode() { // XXX do we need to create new nodes here? can't we reus
 
 function isEmptyNode(node) {
   return node.length === 2 && node[0] === 'toplevel' && node[1].length === 0;
+}
+
+function clearEmptyNodes(list) {
+  for (var i = 0; i < list.length;) {
+    if (isEmptyNode(list[i]) || (list[i][0] === 'stat' && isEmptyNode(list[i][1]))) {
+      list.splice(i, 1);
+    } else {
+      i++;
+    }
+  }
 }
 
 // Passes
@@ -584,12 +593,24 @@ function simplifyExpressions(ast) {
         }
       } else if (type === 'assign') {
         // optimizations for assigning into HEAP32 specifically
-        if (node[1] === true && node[2][0] === 'sub' && node[2][1][0] === 'name' && node[2][1][1] === 'HEAP32') {
-          // HEAP32[..] = x | 0 does not need the | 0 (unless it is a mandatory |0 of a call)
-          if (node[3][0] === 'binary' && node[3][1] === '|') {
-            if (node[3][2][0] === 'num' && node[3][2][1] === 0 && node[3][3][0] != 'call') {
-              node[3] = node[3][3];
-            } else if (node[3][3][0] === 'num' && node[3][3][1] === 0 && node[3][2][0] != 'call') {
+        if (node[1] === true && node[2][0] === 'sub' && node[2][1][0] === 'name') {
+          if (node[2][1][1] === 'HEAP32') {
+            // HEAP32[..] = x | 0 does not need the | 0 (unless it is a mandatory |0 of a call)
+            if (node[3][0] === 'binary' && node[3][1] === '|') {
+              if (node[3][2][0] === 'num' && node[3][2][1] === 0 && node[3][3][0] != 'call') {
+                node[3] = node[3][3];
+              } else if (node[3][3][0] === 'num' && node[3][3][1] === 0 && node[3][2][0] != 'call') {
+                node[3] = node[3][2];
+              }
+            }
+          } else if (node[2][1][1] === 'HEAP8') {
+            // HEAP8[..] = x & 0xff does not need the & 0xff
+            if (node[3][0] === 'binary' && node[3][1] === '&' && node[3][3][0] == 'num' && node[3][3][1] == 0xff) {
+              node[3] = node[3][2];
+            }
+          } else if (node[2][1][1] === 'HEAP16') {
+            // HEAP16[..] = x & 0xffff does not need the & 0xffff
+            if (node[3][0] === 'binary' && node[3][1] === '&' && node[3][3][0] == 'num' && node[3][3][1] == 0xffff) {
               node[3] = node[3][2];
             }
           }
@@ -617,6 +638,7 @@ function simplifyExpressions(ast) {
 
     if (asm) {
       if (hasTempDoublePtr) {
+        var asmData = normalizeAsm(ast);
         traverse(ast, function(node, type) {
           if (type === 'assign') {
             if (node[1] === true && node[2][0] === 'sub' && node[2][1][0] === 'name' && node[2][1][1] === 'HEAP32') {
@@ -641,7 +663,7 @@ function simplifyExpressions(ast) {
                 node[2][0] !== 'seq') { // avoid (x, y, z) which can be used for tempDoublePtr on doubles for alignment fixes
               if (node[1][2][1][1] === 'HEAP32') {
                 node[1][3][1][1] = 'HEAPF32';
-                return ['unary-prefix', '+', node[1][3]];
+                return makeAsmCoercion(node[1][3], detectAsmCoercion(node[2]));
               } else {
                 node[1][3][1][1] = 'HEAP32';
                 return ['binary', '|', node[1][3], ['num', 0]];
@@ -685,7 +707,6 @@ function simplifyExpressions(ast) {
             }
           }
         });
-        var asmData = normalizeAsm(ast);
         for (var v in bitcastVars) {
           var info = bitcastVars[v];
           // good variables define only one type, use only one type, have definitions and uses, and define as a different type than they use
@@ -699,14 +720,19 @@ function simplifyExpressions(ast) {
               if (correct === 'HEAP32') {
                 define[3] = ['binary', '|', define[3], ['num', 0]];
               } else {
-                define[3] = ['unary-prefix', '+', define[3]];
+                define[3] = makeAsmCoercion(define[3], asmPreciseF32 ? ASM_FLOAT : ASM_DOUBLE);
               }
               // do we want a simplifybitops on the new values here?
             });
             info.uses.forEach(function(use) {
               use[2][1][1] = correct;
             });
-            asmData.vars[v] = 1 - asmData.vars[v];
+            var correctType;
+            switch(asmData.vars[v]) {
+              case ASM_INT: correctType = asmPreciseF32 ? ASM_FLOAT : ASM_DOUBLE; break;
+              case ASM_FLOAT: case ASM_DOUBLE: correctType = ASM_INT; break;
+            }
+            asmData.vars[v] = correctType;
           }
         }
         denormalizeAsm(ast, asmData);
@@ -767,32 +793,11 @@ function simplifyExpressions(ast) {
     });
   }
 
-  function asmOpts(fun) {
-    // Add final returns when necessary
-    var returnType = null;
-    traverse(fun, function(node, type) {
-      if (type === 'return' && node[1]) {
-        returnType = detectAsmCoercion(node[1]);
-      }
-    });
-    // Add a final return if one is missing.
-    if (returnType !== null) {
-      var stats = getStatements(fun);
-      var last = stats[stats.length-1];
-      if (last[0] != 'return') {
-        var returnValue = ['num', 0];
-        if (returnType === ASM_DOUBLE) returnValue = ['unary-prefix', '+', returnValue];
-        stats.push(['return', returnValue]);
-      }
-    }
-  }
-
   traverseGeneratedFunctions(ast, function(func) {
     simplifyIntegerConversions(func);
     simplifyBitops(func);
     joinAdditions(func);
     // simplifyZeroComp(func); TODO: investigate performance
-    if (asm) asmOpts(func);
     simplifyNotComps(func);
   });
 }
@@ -801,7 +806,10 @@ function simplifyExpressions(ast) {
 //  HEAP[x >> 2]
 // very often. We can in some cases do the shift on the variable itself when it is set,
 // to greatly reduce the number of shift operations.
-// TODO: when shifting a variable, if there are other uses, keep an unshifted version too, to prevent slowdowns?
+// XXX this optimization is deprecated and currently invalid: does not handle overflows
+//     or non-aligned (round numbers, x >> 2 is a multiple of 4). Both are ok to assume
+//     for pointers (undefined behavior otherwise), but invalid in general, and we do
+//     no sufficiently-well distinguish the cases.
 function optimizeShiftsInternal(ast, conservative) {
   var MAX_SHIFTS = 3;
   traverseGeneratedFunctions(ast, function(fun) {
@@ -1133,7 +1141,9 @@ function optimizeShiftsAggressive(ast) {
 // or such. Simplifying these saves space and time.
 function simplifyNotCompsDirect(node) {
   if (node[0] === 'unary-prefix' && node[1] === '!') {
-    if (node[2][0] === 'binary') {
+    // de-morgan's laws do not work on floats, due to nans >:(
+    if (node[2][0] === 'binary' && (!asm || (((node[2][2][0] === 'binary' && node[2][2][1] === '|') || node[2][2][0] === 'num') &&
+                                             ((node[2][3][0] === 'binary' && node[2][3][1] === '|') || node[2][3][0] === 'num')))) {
       switch(node[2][1]) {
         case '<': return ['binary', '>=', node[2][2], node[2][3]];
         case '>': return ['binary', '<=', node[2][2], node[2][3]];
@@ -1159,13 +1169,28 @@ function simplifyNotComps(ast) {
   simplifyNotCompsPass = false;
 }
 
-var NO_SIDE_EFFECTS = set('num', 'name');
+function callHasSideEffects(node) { // checks if the call itself (not the args) has side effects (or is not statically known)
+  return !(node[1][0] === 'name' && /^Math_/.test(node[1][1]));
+}
 
 function hasSideEffects(node) { // this is 99% incomplete!
-  if (node[0] in NO_SIDE_EFFECTS) return false;
-  if (node[0] === 'unary-prefix') return hasSideEffects(node[2]);
-  if (node[0] === 'binary') return hasSideEffects(node[2]) || hasSideEffects(node[3]);
-  return true;
+  switch (node[0]) {
+    case 'num': case 'name': case 'string': return false;
+    case 'unary-prefix': return hasSideEffects(node[2]);
+    case 'binary': return hasSideEffects(node[2]) || hasSideEffects(node[3]);
+    case 'sub': return hasSideEffects(node[1]) || hasSideEffects(node[2]);
+    case 'call': {
+      if (callHasSideEffects(node)) return true;
+      // This is a statically known call, with no side effects. only args can side effect us
+      var args = node[2];
+      var num = args.length;
+      for (var i = 0; i < num; i++) {
+        if (hasSideEffects(args[i])) return true;
+      }
+      return false;
+    }
+    default: return true;
+  }
 }
 
 // Clear out empty ifs and blocks, and redundant blocks/stats and so forth
@@ -1233,7 +1258,7 @@ function vacuum(ast) {
         }
       } break;
       case 'label': {
-        if (node[2][0] === 'toplevel' && (!node[2][1] || node[2][1].length === 0)) {
+        if (node[2] && node[2][0] === 'toplevel' && (!node[2][1] || node[2][1].length === 0)) {
           return emptyNode();
         }
       } break;
@@ -1532,21 +1557,36 @@ function unVarify(vars, ret) { // transform var x=1, y=2 etc. into (x=1, y=2), i
 // annotations, plus explicit metadata) and denormalize (vice versa)
 var ASM_INT = 0;
 var ASM_DOUBLE = 1;
+var ASM_FLOAT = 2;
+var ASM_NONE = 3;
 
 function detectAsmCoercion(node, asmInfo) {
   // for params, +x vs x|0, for vars, 0.0 vs 0
   if (node[0] === 'num' && node[1].toString().indexOf('.') >= 0) return ASM_DOUBLE;
   if (node[0] === 'unary-prefix') return ASM_DOUBLE;
+  if (node[0] === 'call' && node[1][0] === 'name' && node[1][1] === 'Math_fround') return ASM_FLOAT;
   if (asmInfo && node[0] == 'name') return getAsmType(node[1], asmInfo);
+  if (node[0] === 'name') return ASM_NONE;
   return ASM_INT;
 }
 
 function makeAsmCoercion(node, type) {
-  return type === ASM_INT ? ['binary', '|', node, ['num', 0]] : ['unary-prefix', '+', node];
+  switch (type) {
+    case ASM_INT: return ['binary', '|', node, ['num', 0]];
+    case ASM_DOUBLE: return ['unary-prefix', '+', node];
+    case ASM_FLOAT: return ['call', ['name', 'Math_fround'], [node]];
+    case ASM_NONE: return node; // non-validating code, emit nothing
+    default: throw 'whaa?';
+  }
 }
 
 function makeAsmVarDef(v, type) {
-  return [v, type === ASM_INT ? ['num', 0] : ['unary-prefix', '+', ['num', 0]]];
+  switch (type) {
+    case ASM_INT: return [v, ['num', 0]];
+    case ASM_DOUBLE: return [v, ['unary-prefix', '+', ['num', 0]]];
+    case ASM_FLOAT: return [v, ['call', ['name', 'Math_fround'], [['num', 0]]]];
+    default: throw 'wha? ' + JSON.stringify([node, type]) + new Error().stack;
+  }
 }
 
 function getAsmType(name, asmInfo) {
@@ -1560,6 +1600,8 @@ function normalizeAsm(func) {
   var data = {
     params: {}, // ident => ASM_* type
     vars: {}, // ident => ASM_* type
+    inlines: [], // list of inline assembly copies
+    ret: undefined,
   };
   // process initial params
   var stats = func[3];
@@ -1570,6 +1612,7 @@ function normalizeAsm(func) {
     node = node[1];
     var name = node[2][1];
     if (func[2] && func[2].indexOf(name) < 0) break; // not an assign into a parameter, but a global
+    if (name in data.params) break; // already done that param, must be starting function body
     data.params[name] = detectAsmCoercion(node[3]);
     stats[i] = emptyNode();
     i++;
@@ -1584,19 +1627,23 @@ function normalizeAsm(func) {
       var name = v[0];
       var value = v[1];
       if (!(name in data.vars)) {
-        assert(value[0] === 'num' || (value[0] === 'unary-prefix' && value[2][0] === 'num')); // must be valid coercion no-op
+        assert(value[0] === 'num' || (value[0] === 'unary-prefix' && value[2][0] === 'num') // must be valid coercion no-op
+                                  || (value[0] === 'call' && value[1][0] === 'name' && value[1][1] === 'Math_fround'));
         data.vars[name] = detectAsmCoercion(value);
         v.length = 1; // make an un-assigning var
       } else {
+        assert(j === 0, 'cannot break in the middle');
         break outer;
       }
     }
     i++;
   }
-  // finally, look for other var definitions and collect them
+  // look for other var definitions and collect them
   while (i < stats.length) {
     traverse(stats[i], function(node, type) {
       if (type === 'var') {
+        assert(0, 'should be no vars to fix! ' + func[1] + ' : ' + JSON.stringify(node));
+        /*
         for (var j = 0; j < node[1].length; j++) {
           var v = node[1][j];
           var name = v[0];
@@ -1611,15 +1658,19 @@ function normalizeAsm(func) {
           }
         }
         unVarify(node[1], node);
-      } else if (type === 'dot') {
-        if (node[1][0] === 'name' && node[1][1] === 'Math') {
-          // transform Math.max to Math_max; we forward in the latter version
-          node[0] = 'name';
-          node[1] = 'Math_' + node[2];
-        }
+        */
+      } else if (type === 'call' && node[1][0] === 'function') {
+        assert(!node[1][1]); // anonymous functions only
+        data.inlines.push(node[1]);
+        node[1] = ['name', 'inlinejs']; // empty out body, leave arguments, so they are eliminated/minified properly
       }
     });
     i++;
+  }
+  // look for final 'return' statement to get return type.
+  var retStmt = stats[stats.length - 1];
+  if (retStmt && retStmt[0] === 'return' && retStmt[1]) {
+    data.ret = detectAsmCoercion(retStmt[1]);
   }
   //printErr('normalized \n\n' + astToSrc(func) + '\n\nwith: ' + JSON.stringify(data));
   return data;
@@ -1665,6 +1716,25 @@ function denormalizeAsm(func, data) {
   } else {
     stats[next] = emptyNode();
   }
+  if (data.inlines.length > 0) {
+    var i = 0;
+    traverse(func, function(node, type) {
+      if (type === 'call' && node[1][0] === 'name' && node[1][1] === 'inlinejs') {
+        node[1] = data.inlines[i++]; // swap back in the body
+      }
+    });
+  }
+  // ensure that there's a final 'return' statement if needed.
+  if (data.ret !== undefined) {
+    var retStmt = stats[stats.length - 1];
+    if (!retStmt || retStmt[0] !== 'return') {
+      var retVal = ['num', 0];
+      if (data.ret !== ASM_INT) {
+        retVal = makeAsmCoercion(retVal, data.ret);
+      }
+      stats.push(['return', retVal]);
+    }
+  }
   //printErr('denormalized \n\n' + astToSrc(func) + '\n\n');
 }
 
@@ -1699,9 +1769,37 @@ function getStackBumpSize(ast) {
   return node ? node[3][2][3][1] : 0;
 }
 
-// Very simple 'registerization', coalescing of variables into a smaller number,
-// as part of minification. Globals-level minification began in a previous pass,
-// we receive extraInfo which tells us how to rename globals. (Only in asm.js.)
+// Name minification
+
+var RESERVED = set('do', 'if', 'in', 'for', 'new', 'try', 'var', 'env', 'let');
+var VALID_MIN_INITS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$';
+var VALID_MIN_LATERS = VALID_MIN_INITS + '0123456789';
+
+var minifiedNames = [];
+var minifiedState = [0];
+
+function ensureMinifiedNames(n) { // make sure the nth index in minifiedNames exists. done 100% deterministically
+  while (minifiedNames.length < n+1) {
+    // generate the current name
+    var name = VALID_MIN_INITS[minifiedState[0]];
+    for (var i = 1; i < minifiedState.length; i++) {
+      name += VALID_MIN_LATERS[minifiedState[i]];
+    }
+    if (!(name in RESERVED)) minifiedNames.push(name);
+    // increment the state
+    var i = 0;
+    while (1) {
+      minifiedState[i]++;
+      if (minifiedState[i] < (i === 0 ? VALID_MIN_INITS : VALID_MIN_LATERS).length) break;
+      // overflow
+      minifiedState[i] = 0;
+      i++;
+      if (i === minifiedState.length) minifiedState.push(-1); // will become 0 after increment in next loop head
+    }
+  }
+}
+
+// Very simple 'registerization', coalescing of variables into a smaller number.
 //
 // We do not optimize when there are switches, so this pass only makes sense with
 // relooping.
@@ -1711,6 +1809,15 @@ function getStackBumpSize(ast) {
 function registerize(ast) {
   traverseGeneratedFunctions(ast, function(fun) {
     if (asm) var asmData = normalizeAsm(fun);
+    if (!asm) {
+      var hasFunction = false;
+      traverse(fun, function(node, type) {
+        if (type === 'function') hasFunction = true;
+      });
+      if (hasFunction) {
+        return; // inline assembly, and not asm (where we protect it in normalize/denormalize), so abort registerize pass
+      }
+    }
     // Add parameters as a first (fake) var (with assignment), so they get taken into consideration
     var params = {}; // note: params are special, they can never share a register between them (see later)
     if (fun[2] && fun[2].length) {
@@ -1728,6 +1835,7 @@ function registerize(ast) {
     // Replace all var definitions with assignments; we will add var definitions at the top after we registerize
     // We also mark local variables - i.e., having a var definition
     var localVars = {};
+    var allVars = {};
     var hasSwitch = false; // we cannot optimize variables if there is a switch, unless in asm mode
     traverse(fun, function(node, type) {
       if (type === 'var') {
@@ -1740,73 +1848,25 @@ function registerize(ast) {
         }
       } else if (type === 'switch') {
         hasSwitch = true;
+      } else if (type === 'name') {
+        allVars[node[1]] = 1;
       }
     });
     vacuum(fun);
-    if (extraInfo) {
-      assert(asm);
-      var usedGlobals = {};
-      var nextLocal = 0;
-      // Minify globals using the mapping we were given
-      traverse(fun, function(node, type) {
-        if (type === 'name') {
-          var name = node[1];
-          var minified = extraInfo.globals[name];
-          if (minified) {
-            assert(!localVars[name], name); // locals must not shadow globals, or else we don't know which is which
-            if (localVars[minified]) {
-              // trying to minify a global into a name used locally. rename all the locals
-              var newName = '$_newLocal_' + (nextLocal++);
-              assert(!localVars[newName]);
-              if (params[minified]) {
-                params[newName] = 1;
-                delete params[minified];
-              }
-              localVars[newName] = 1;
-              delete localVars[minified];
-              asmData.vars[newName] = asmData.vars[minified];
-              delete asmData.vars[minified];
-              asmData.params[newName] = asmData.params[minified];
-              delete asmData.params[minified];
-              traverse(fun, function(node, type) {
-                if (type === 'name' && node[1] === minified) {
-                  node[1] = newName;
-                }
-              });
-              if (fun[2]) {
-                for (var i = 0; i < fun[2].length; i++) {
-                  if (fun[2][i] === minified) fun[2][i] = newName;
-                }
-              }
-            }
-            node[1] = minified;
-            usedGlobals[minified] = 1;
-          }
-        }
-      });
-      assert(fun[1] in extraInfo.globals, fun[1]);
-      fun[1] = extraInfo.globals[fun[1]];
-      assert(fun[1]);
-      var nextRegName = 0;
-    }
     var regTypes = {};
     function getNewRegName(num, name) {
-      if (!asm) return 'r' + num;
-      var type = asmData.vars[name];
-      if (!extraInfo) {
-        var ret = (type ? 'd' : 'i') + num;
+      var ret;
+      if (!asm) {
+        ret = 'r' + num;
+      } else {
+        var type = asmData.vars[name];
+        ret = (type ? 'd' : 'i') + num;
         regTypes[ret] = type;
-        return ret;
       }
-      // find the next free minified name that is not used by a global that shows up in this function
-      while (nextRegName < extraInfo.names.length) {
-        var ret = extraInfo.names[nextRegName++];
-        if (!usedGlobals[ret]) {
-          regTypes[ret] = type;
-          return ret;
-        }
+      if (ret in allVars) {
+        assert(ret in localVars, 'register shadows non-local name');
       }
-      assert('ran out of names');
+      return ret;
     }
     // Find the # of uses of each variable.
     // While doing so, check if all a variable's uses are dominated in a simple
@@ -1913,7 +1973,7 @@ function registerize(ast) {
     // we just use a fresh register to make sure we avoid this, but it could be
     // optimized to check for safe registers (free, and not used in this loop level).
     var varRegs = {}; // maps variables to the register they will use all their life
-    var freeRegsClasses = asm ? [[], []] : []; // two classes for asm, one otherwise
+    var freeRegsClasses = asm ? [[], [], [], []] : []; // two classes for asm, one otherwise XXX - hardcoded length
     var nextReg = 1;
     var fullNames = {};
     var loopRegs = {}; // for each loop nesting level, the list of bound variables
@@ -2014,6 +2074,8 @@ function registerize(ast) {
       var finalAsmData = {
         params: {},
         vars: {},
+        inlines: asmData.inlines,
+        ret: asmData.ret,
       };
       for (var i = 1; i < nextReg; i++) {
         var reg = fullNames[i];
@@ -2029,6 +2091,1063 @@ function registerize(ast) {
     }
   });
 }
+
+
+// Assign variables to 'registers', coalescing them onto a smaller number of shared
+// variables.
+//
+// This does the same job as 'registerize' above, but burns a lot more cycles trying
+// to reduce the total number of register variables.  Key points about the operation:
+//
+//   * we decompose the AST into a flow graph and perform a full liveness
+//     analysis, to determine which variables are live at each point.
+//
+//   * variables that are live concurrently are assigned to different registers.
+//
+//   * variables that are linked via 'x=y' style statements are assigned the same
+//     register if possible, so that the redundant assignment can be removed.
+//     (e.g. assignments used to pass state around through loops).
+//
+//   * any code that cannot be reached through the flow-graph is removed.
+//     (e.g. redundant break statements like 'break L123; break;').
+//
+//   * any assignments that we can prove are not subsequently used are removed.
+//     (e.g. unnecessary assignments to the 'label' variable).
+//
+function registerizeHarder(ast) {
+  assert(asm);
+
+  traverseGeneratedFunctions(ast, function(fun) {
+
+    var asmData = normalizeAsm(fun);
+
+    var localVars = asmData.vars;
+    for (var name in asmData.params) {
+      localVars[name] = asmData.params[name];
+    }
+
+    // Utilities for allocating register variables.
+    // We need distinct register pools for each type of variable.
+
+    var allRegsByType = [{}, {}, {}, {}];
+    var regPrefixByType = ['i', 'd', 'f', 'n'];
+    var nextReg = 1;
+
+    function createReg(forName) {
+      // Create a new register of type suitable for the given variable name.
+      var allRegs = allRegsByType[localVars[forName]];
+      reg = nextReg++;
+      allRegs[reg] = regPrefixByType[localVars[forName]] + reg;
+      return reg;
+    }
+
+    // Traverse the tree in execution order and synthesize a basic flow-graph.
+    // It's convenient to build a kind of "dual" graph where the nodes identify
+    // the junctions between blocks  at which control-flow may branch, and each
+    // basic block is an edge connecting two such junctions.
+    // For each junction we store:
+    //    * set of blocks that originate at the junction
+    //    * set of blocks that terminate at the junction
+    // For each block we store:
+    //    * a single entry junction
+    //    * a single exit junction
+    //    * a 'use' and 'kill' set of names for the block
+    //    * full sequence of 'name' and 'assign' nodes in the block
+    //    * whether each such node appears as part of a larger expression
+    //      (and therefore cannot be safely eliminated)
+    //    * set of labels that can be used to jump to this block
+
+    var junctions = [];
+    var blocks = [];
+    var currEntryJunction = null;
+    var nextBasicBlock = null;
+    var isInExpr = 0;
+    var activeLabels = [{}];
+    var nextLoopLabel = null;
+
+    var ENTRY_JUNCTION = 0;
+    var EXIT_JUNCTION = 1;
+    var ENTRY_BLOCK = 0;
+
+    function addJunction() {
+      // Create a new junction, without inserting it into the graph.
+      // This is useful for e.g. pre-allocating an exit node.
+      var id = junctions.length;
+      junctions[id] = {id: id, inblocks: {}, outblocks: {}};
+      return id;
+    }
+
+    function markJunction(id) {
+      // Mark current traversal location as a junction.
+      // This makes a new basic block exiting at this position.
+      if (id === undefined || id === null) {
+        id = addJunction();
+      }
+      joinJunction(id, true);
+      return id;
+    }
+
+    function setJunction(id, force) {
+      // Set the next entry junction to the given id.
+      // This can be used to enter at a previously-declared point.
+      // You can't return to a junction with no incoming blocks
+      // unless the 'force' parameter is specified.
+      assert(nextBasicBlock.nodes.length === 0, 'refusing to abandon an in-progress basic block')
+      if (force || setSize(junctions[id].inblocks) > 0) {
+        currEntryJunction = id;
+      } else {
+        currEntryJunction = null;
+      }
+    }
+
+    function joinJunction(id, force) {
+      // Complete the pending basic block by exiting at this position.
+      // This can be used to exit at a previously-declared point.
+      if (currEntryJunction !== null) {
+        nextBasicBlock.id = blocks.length;
+        nextBasicBlock.entry = currEntryJunction;
+        nextBasicBlock.exit = id;
+        junctions[currEntryJunction].outblocks[nextBasicBlock.id] = 1;
+        junctions[id].inblocks[nextBasicBlock.id] = 1;
+        blocks.push(nextBasicBlock);
+      } 
+      nextBasicBlock = { id: null, entry: null, exit: null, labels: {}, nodes: [], isexpr: [], use: {}, kill: {} };
+      setJunction(id, force);
+      return id;
+    }
+
+    function pushActiveLabels(onContinue, onBreak) {
+      // Push the target junctions for continuing/breaking a loop.
+      // This should be called before traversing into a loop.
+      var newLabels = copy(activeLabels[activeLabels.length-1]);
+      newLabels[null] = [onContinue, onBreak];
+      if (nextLoopLabel) {
+        newLabels[nextLoopLabel] = [onContinue, onBreak];
+        nextLoopLabel = null;
+      }
+      activeLabels.push(newLabels);
+    }
+
+    function popActiveLabels() {
+      // Pop the target junctions for continuing/breaking a loop.
+      // This should be called after traversing into a loop.
+      activeLabels.pop();
+    }
+
+    function markNonLocalJump(type, label) {
+      // Complete a block via  'return', 'break' or 'continue'.
+      // This joins the targetted junction and then sets the current junction to null.
+      // Any code traversed before we get back an existing junction is dead code.
+      if (type === 'return') {
+        joinJunction(EXIT_JUNCTION);
+      } else {
+        label = label ? label : null;
+        var targets = activeLabels[activeLabels.length-1][label];
+        assert(targets, 'jump to unknown label');
+        if (type === 'continue') {
+          joinJunction(targets[0]);
+        } else if (type === 'break') {
+          joinJunction(targets[1]);
+        } else {
+          assert(false, 'unknown jump node type');
+        }
+      }
+      currEntryJunction = null;
+    }
+
+    function addUseNode(node) {
+      // Mark a use of the given name node in the current basic block.
+      assert(node[0] === 'name', 'not a use node');
+      var name = node[1];
+      if (name in localVars) {
+        nextBasicBlock.nodes.push(node);
+        nextBasicBlock.isexpr.push(isInExpr);
+        if (!nextBasicBlock.kill[name]) {
+          nextBasicBlock.use[name] = 1;
+        }
+      }
+    }
+
+    function addKillNode(node) {
+      // Mark an assignment to the given name node in the current basic block.
+      assert(node[0] === 'assign', 'not a kill node');
+      assert(node[1] === true, 'not a kill node');
+      assert(node[2][0] === 'name', 'not a kill node');
+      var name = node[2][1];
+      if (name in localVars) {
+        nextBasicBlock.nodes.push(node);
+        nextBasicBlock.isexpr.push(isInExpr);
+        nextBasicBlock.kill[name] = 1;
+      }
+    }
+
+    function lookThroughCasts(node) {
+      // Look through value-preserving casts, like "x | 0" => "x"
+      if (node[0] === 'binary' && node[1] === '|') {
+        if (node[3][0] === 'num' && node[3][1] === 0) {
+            return lookThroughCasts(node[2]);
+        }
+      }
+      return node;
+    }
+
+    function addBlockLabel(node) {
+      assert(nextBasicBlock.nodes.length === 0, 'cant add label to an in-progress basic block')
+      if (node[0] === 'num') {
+        nextBasicBlock.labels[node[1]] = 1;
+      }
+    }
+
+    function isTrueNode(node) {
+      // Check if the given node is statically truthy.
+      return (node[0] === 'num' && node[1] != 0);
+    }
+
+    function isFalseNode(node) {
+      // Check if the given node is statically falsy.
+      return (node[0] === 'num' && node[1] == 0);
+    }
+
+    function morphNode(node, newNode) {
+      // In-place morph a node into some other type of node.
+      var i = 0;
+      while (i < node.length && i < newNode.length) {
+        node[i] = newNode[i];
+        i++;
+      }
+      while (i < newNode.length) {
+        node.push(newNode[i]);
+        i++;
+      }
+      if (node.length > newNode.length) {
+        node.length = newNode.length;
+      }
+    }
+
+    function buildFlowGraph(node) {
+      // Recursive function to build up the flow-graph.
+      // It walks the tree in execution order, calling the above state-management
+      // functions at appropriate points in the traversal.
+      var type = node[0];
+  
+      // Any code traversed without an active entry junction must be dead,
+      // as the resulting block could never be entered. Let's remove it.
+      if (currEntryJunction === null && junctions.length > 0) {
+        morphNode(node, ['block', []]);
+        return;
+      }
+ 
+      // Traverse each node type according to its particular control-flow semantics.
+      switch (type) {
+        case 'defun':
+          var jEntry = markJunction();
+          assert(jEntry === ENTRY_JUNCTION);
+          var jExit = addJunction();
+          assert(jExit === EXIT_JUNCTION);
+          for (var i = 0; i < node[3].length; i++) {
+            buildFlowGraph(node[3][i]);
+          }
+          joinJunction(jExit);
+          break;
+        case 'if':
+          isInExpr++;
+          buildFlowGraph(node[1]);
+          isInExpr--;
+          var jEnter = markJunction();
+          var jExit = addJunction();
+          if (node[2]) {
+            // Detect and mark "if (label == N) { <labelled block> }".
+            if (node[1][0] === 'binary' && node[1][1] === '==') {
+              var lhs = lookThroughCasts(node[1][2]);
+              if (lhs[0] === 'name' && lhs[1] === 'label') {
+                addBlockLabel(lookThroughCasts(node[1][3]));
+              }
+            }
+            buildFlowGraph(node[2]);
+          }
+          joinJunction(jExit);
+          setJunction(jEnter);
+          if (node[3]) {
+            buildFlowGraph(node[3]);
+          }
+          joinJunction(jExit);
+          break;
+        case 'conditional':
+          isInExpr++;
+          buildFlowGraph(node[1]);
+          var jEnter = markJunction();
+          var jExit = addJunction();
+          if (node[2]) {
+            buildFlowGraph(node[2]);
+          }
+          joinJunction(jExit);
+          setJunction(jEnter);
+          if (node[3]) {
+            buildFlowGraph(node[3]);
+          }
+          joinJunction(jExit);
+          isInExpr--;
+          break;
+        case 'while':
+          // Special-case "while (1) {}" to use fewer junctions,
+          // since emscripten generates a lot of these.
+          if (isTrueNode(node[1])) {
+            var jLoop = markJunction();
+            var jExit = addJunction();
+            pushActiveLabels(jLoop, jExit);
+            buildFlowGraph(node[2]);
+            popActiveLabels();
+            joinJunction(jLoop);
+            setJunction(jExit);
+          } else {
+            var jCond = markJunction();
+            var jLoop = addJunction();
+            var jExit = addJunction();
+            isInExpr++;
+            buildFlowGraph(node[1]);
+            isInExpr--;
+            joinJunction(jLoop);
+            pushActiveLabels(jCond, jExit);
+            buildFlowGraph(node[2]);
+            popActiveLabels();
+            joinJunction(jCond);
+            // An empty basic-block linking condition exit to loop exit.
+            setJunction(jLoop);
+            joinJunction(jExit);
+          }
+          break;
+        case 'do':
+          // Special-case "do {} while (1)" and "do {} while (0)" to use
+          // fewer junctions, since emscripten generates a lot of these.
+          if (isFalseNode(node[1])) {
+            var jExit = addJunction();
+            pushActiveLabels(jExit, jExit);
+            buildFlowGraph(node[2]);
+            popActiveLabels();
+            joinJunction(jExit);
+          } else if (isTrueNode(node[1])) {
+            var jLoop = markJunction();
+            var jExit = addJunction();
+            pushActiveLabels(jLoop, jExit);
+            buildFlowGraph(node[2]);
+            popActiveLabels();
+            joinJunction(jLoop);
+            setJunction(jExit);
+          } else {
+            var jLoop = markJunction();
+            var jCond = addJunction();
+            var jCondExit = addJunction();
+            var jExit = addJunction();
+            pushActiveLabels(jCond, jExit);
+            buildFlowGraph(node[2]);
+            popActiveLabels();
+            joinJunction(jCond);
+            isInExpr++;
+            buildFlowGraph(node[1]);
+            isInExpr--;
+            joinJunction(jCondExit);
+            joinJunction(jLoop);
+            setJunction(jCondExit);
+            joinJunction(jExit)
+          }
+          break;
+        case 'for':
+          var jTest = addJunction();
+          var jBody = addJunction();
+          var jStep = addJunction();
+          var jExit = addJunction();
+          buildFlowGraph(node[1]);
+          joinJunction(jTest);
+          isInExpr++;
+          buildFlowGraph(node[2]);
+          isInExpr--;
+          joinJunction(jBody);
+          pushActiveLabels(jStep, jExit);
+          buildFlowGraph(node[4]);
+          popActiveLabels();
+          joinJunction(jStep);
+          buildFlowGraph(node[3]);
+          joinJunction(jTest);
+          setJunction(jBody);
+          joinJunction(jExit);
+          break;
+        case 'label':
+          assert(node[2][0] in BREAK_CAPTURERS, 'label on non-loop, non-switch statement')
+          nextLoopLabel = node[1];
+          buildFlowGraph(node[2]);
+          break;
+        case 'switch':
+          // Emscripten generates switch statements of a very limited
+          // form: all case clauses are numeric literals, and all
+          // case bodies end with a (maybe implicit) break.  So it's
+          // basically equivalent to a multi-way 'if' statement.
+          isInExpr++;
+          buildFlowGraph(node[1]);
+          isInExpr--;
+          var condition = lookThroughCasts(node[1]);
+          var jCheckExit = markJunction();
+          var jExit = addJunction();
+          pushActiveLabels(null, jExit);
+          var hasDefault = false;
+          for (var i=0; i<node[2].length; i++) {
+            setJunction(jCheckExit);
+            // All case clauses are either 'default' or a numeric literal.
+            if (!node[2][i][0]) {
+              hasDefault = true;
+            } else {
+              // Detect switches dispatching to labelled blocks.
+              if (condition[0] === 'name' && condition[1] === 'label') {
+                addBlockLabel(lookThroughCasts(node[2][i][0]));
+              }
+            }
+            for (var j = 0; j < node[2][i][1].length; j++) {
+              buildFlowGraph(node[2][i][1][j]);
+            }
+            // Control flow will never actually reach the end of the case body.
+            // If there's live code here, assume it jumps to case exit.
+            if (currEntryJunction !== null && nextBasicBlock.nodes.length > 0) {
+              if (node[2][i][0]) {
+                markNonLocalJump('return');
+              } else {
+                joinJunction(jExit);
+              }
+            }
+          }
+          // If there was no default case, we also need an empty block
+          // linking straight from the test evaluation to the exit.
+          if (!hasDefault) {
+            setJunction(jCheckExit);
+          }
+          joinJunction(jExit);
+          popActiveLabels()
+          break;
+        case 'return':
+          if (node[1]) {
+            isInExpr++;
+            buildFlowGraph(node[1]);
+            isInExpr--;
+          }
+          markNonLocalJump(type);
+          break;
+        case 'break':
+        case 'continue':
+          markNonLocalJump(type, node[1]);
+          break;
+        case 'assign':
+          isInExpr++;
+          buildFlowGraph(node[3]);
+          isInExpr--;
+          if (node[1] === true && node[2][0] === 'name') {
+            addKillNode(node);
+          } else {
+            buildFlowGraph(node[2]);
+          }
+          break;
+        case 'name':
+          addUseNode(node);
+          break;
+        case 'block':
+        case 'toplevel':
+          if (node[1]) {
+            for (var i = 0; i < node[1].length; i++) {
+              buildFlowGraph(node[1][i]);
+            }
+          }
+          break;
+        case 'stat':
+          buildFlowGraph(node[1]);
+          break;
+        case 'unary-prefix':
+        case 'unary-postfix':
+          isInExpr++;
+          buildFlowGraph(node[2]);
+          isInExpr--;
+          break;
+        case 'binary':
+          isInExpr++;
+          buildFlowGraph(node[2]);
+          buildFlowGraph(node[3]);
+          isInExpr--;
+          break;
+        case 'call':
+          isInExpr++;
+          buildFlowGraph(node[1]);
+          if (node[2]) {
+            for (var i = 0; i < node[2].length; i++) {
+              buildFlowGraph(node[2][i]);
+            }
+          }
+          isInExpr--;
+          // If the call is statically known to throw,
+          // treat it as a jump to function exit.
+          if (!isInExpr && node[1][0] === 'name') {
+            if (node[1][1] in FUNCTIONS_THAT_ALWAYS_THROW) {
+              markNonLocalJump('return');
+            }
+          }
+          break;
+        case 'seq':
+        case 'sub':
+          isInExpr++;
+          buildFlowGraph(node[1]);
+          buildFlowGraph(node[2]);
+          isInExpr--;
+          break;
+        case 'dot':
+        case 'throw':
+          isInExpr++;
+          buildFlowGraph(node[1]);
+          isInExpr--;
+          break;
+        case 'num':
+        case 'string':
+        case 'var':
+          break;
+        default:
+          printErr(JSON.stringify(node));
+          assert(false, 'unsupported node type: ' + type);
+      }
+    }
+    buildFlowGraph(fun);
+
+    assert(setSize(junctions[ENTRY_JUNCTION].inblocks) === 0, 'function entry must have no incoming blocks');
+    assert(setSize(junctions[EXIT_JUNCTION].outblocks) === 0, 'function exit must have no outgoing blocks');
+    assert(blocks[ENTRY_BLOCK].entry === ENTRY_JUNCTION, 'block zero must be the initial block');
+
+    // Fix up implicit jumps done by assigning to the 'label' variable.
+    // If a block ends with an assignment to 'label' and there's another block
+    // with that value of 'label' as precondition, we tweak the flow graph so
+    // that the former jumps straight to the later.
+
+    var labelledBlocks = {};
+    var labelledJumps = [];
+    FINDLABELLEDBLOCKS:
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i];
+      // Does it have any labels as preconditions to its entry?
+      for (var labelVal in block.labels) {
+        // If there are multiple blocks with the same label, all bets are off.
+        // This seems to happen sometimes for short blocks that end with a return.
+        // TODO: it should be safe to merge the duplicates if they're identical.
+        if (labelVal in labelledBlocks) {
+          labelledBlocks = {};
+          labelledJumps = [];
+          break FINDLABELLEDBLOCKS;
+        }
+        labelledBlocks[labelVal] = block;
+      }
+      // Does it assign a specific label value at exit?
+      if ('label' in block.kill) {
+        var finalNode = block.nodes[block.nodes.length - 1];
+        if (finalNode[0] === 'assign' && finalNode[2][1] === 'label') {
+          // If labels are computed dynamically then all bets are off.
+          // This can happen due to indirect branching in llvm output.
+          if (finalNode[3][0] !== 'num') {
+            labelledBlocks = {};
+            labelledJumps = [];
+            break FINDLABELLEDBLOCKS;
+          }
+          labelledJumps.push([finalNode[3][1], block]);
+        } else { 
+          // If label is assigned a non-zero value elsewhere in the block
+          // then all bets are off.  This can happen e.g. due to outlining
+          // saving/restoring label to the stack.
+          for (var j = 0; j < block.nodes.length - 1; j++) {
+            if (block.nodes[j][0] === 'assign' && block.nodes[j][2][1] === 'label') {
+              if (block.nodes[j][3][0] !== 'num' && block.nodes[j][3][1] !== 0) {
+                labelledBlocks = {};
+                labelledJumps = [];
+                break FINDLABELLEDBLOCKS;
+              }
+            }
+          }
+        }
+      }
+    }
+    for (var labelVal in labelledBlocks) {
+      var block = labelledBlocks[labelVal];
+      // Disconnect it from the graph, and create a
+      // new junction for jumps targetting this label.
+      delete junctions[block.entry].outblocks[block.id];
+      block.entry = addJunction();
+      junctions[block.entry].outblocks[block.id] = 1;
+      // Add a fake use of 'label' to keep it alive in predecessor.
+      block.use['label'] = 1;
+      block.nodes.unshift(['name', 'label']);
+      block.isexpr.unshift(1);
+    }
+    for (var i = 0; i < labelledJumps.length; i++) {
+      var labelVal = labelledJumps[i][0];
+      var block = labelledJumps[i][1];
+      var targetBlock = labelledBlocks[labelVal];
+      if (targetBlock) {
+        // Redirect its exit to entry of the target block.
+        delete junctions[block.exit].inblocks[block.id];
+        block.exit = targetBlock.entry;
+        junctions[block.exit].inblocks[block.id] = 1;
+      }
+    }
+    labelledBlocks = null;
+    labelledJumps = null;
+
+    // Do a backwards data-flow analysis to determine the set of live
+    // variables at each junction, and to use this information to eliminate
+    // any unused assignments.
+    // We run two nested phases.  The inner phase builds the live set for each
+    // junction.  The outer phase uses this to try to eliminate redundant
+    // stores in each basic block, which might in turn affect liveness info.
+
+    function analyzeJunction(junc) {
+      // Update the live set for this junction.
+      var live = {};
+      for (var b in junc.outblocks) {
+        var block = blocks[b];
+        var liveSucc = junctions[block.exit].live || {};
+        for (var name in liveSucc) {
+          if (!(name in block.kill)) {
+            live[name] = 1;
+          }
+        }
+        for (var name in block.use) {
+          live[name] = 1;
+        }
+      }
+      junc.live = live;
+    }
+
+    function analyzeBlock(block) {
+      // Update information about the behaviour of the block.
+      // This includes the standard 'use' and 'kill' information,
+      // plus a 'link' set naming values that flow through from entry
+      // to exit, possibly changing names via simple 'x=y' assignments.
+      // As we go, we eliminate assignments if the variable is not
+      // subsequently used.
+      var live = copy(junctions[block.exit].live);
+      var use = {};
+      var kill = {};
+      var link = {};
+      var lastUseLoc = {};
+      var firstDeadLoc = {};
+      var firstKillLoc = {};
+      var lastKillLoc = {};
+      for (var name in live) {
+        link[name] = name;
+        lastUseLoc[name] = block.nodes.length;
+        firstDeadLoc[name] = block.nodes.length;
+      }
+      for (var j = block.nodes.length - 1; j >=0 ; j--) {
+        var node = block.nodes[j];
+        if (node[0] === 'name') {
+          var name = node[1];
+          live[name] = 1;
+          use[name] = j;
+          if (lastUseLoc[name] === undefined) {
+            lastUseLoc[name] = j;
+            firstDeadLoc[name] = j;
+          }
+        } else {
+          var name = node[2][1];
+          // We only keep assignments if they will be subsequently used.
+          if (name in live) {
+            kill[name] = 1;
+            delete use[name];
+            delete live[name];
+            firstDeadLoc[name] = j;
+            firstKillLoc[name] = j;
+            if (lastUseLoc[name] === undefined) {
+              lastUseLoc[name] = j;
+            }
+            if (lastKillLoc[name] === undefined) {
+              lastKillLoc[name] = j;
+            }
+            // If it's an "x=y" and "y" is not live, then we can create a
+            // flow-through link from "y" to "x".  If not then there's no
+            // flow-through link for "x".
+            var oldLink = link[name];
+            if (oldLink) {
+              delete link[name];
+              if (node[3][0] === 'name') {
+                if (node[3][1] in localVars) {
+                  link[node[3][1]] = oldLink;
+                }
+              }
+            }
+          } else {
+            // The result of this assignment is never used, so delete it.
+            // We may need to keep the RHS for its value or its side-effects.
+            function removeUnusedNodes(j, n) {
+              for (var name in lastUseLoc) {
+                lastUseLoc[name] -= n;
+              }
+              for (var name in firstKillLoc) {
+                firstKillLoc[name] -= n;
+              }
+              for (var name in lastKillLoc) {
+                lastKillLoc[name] -= n;
+              }
+              for (var name in firstDeadLoc) {
+                firstDeadLoc[name] -= n;
+              }
+              block.nodes.splice(j, n);
+              block.isexpr.splice(j, n);
+            }
+            if (block.isexpr[j] || hasSideEffects(node[3])) {
+              morphNode(node, node[3]);
+              removeUnusedNodes(j, 1);
+            } else {
+              var numUsesInExpr = 0;
+              traverse(node[3], function(node, type) {
+                if (type === 'name' && node[1] in localVars) {
+                  numUsesInExpr++;
+                }
+              });
+              morphNode(node, ['block', []]);
+              j = j - numUsesInExpr;
+              removeUnusedNodes(j, 1 + numUsesInExpr);
+            }
+          }
+        }
+      }
+      block.use = use;
+      block.kill = kill;
+      block.link = link;
+      block.lastUseLoc = lastUseLoc;
+      block.firstDeadLoc = firstDeadLoc;
+      block.firstKillLoc = firstKillLoc;
+      block.lastKillLoc = lastKillLoc;
+    }
+
+    var jWorklistMap = { EXIT_JUNCTION: 1 };
+    var jWorklist = [EXIT_JUNCTION];
+    var bWorklistMap = {};
+    var bWorklist = [];
+
+    // Be sure to visit every junction at least once.
+    // This avoids missing some vars because we disconnected them
+    // when processing the labelled jumps.
+    for (var i = junctions.length - 1; i >= EXIT_JUNCTION; i--) {
+      jWorklistMap[i] = 1;
+      jWorklist.push(i);
+    }
+
+    while (jWorklist.length > 0) {
+      // Iterate on just the junctions until we get stable live sets.
+      // The first run of this loop will grow the live sets to their maximal size.
+      // Subsequent runs will shrink them based on eliminated in-block uses.
+      while (jWorklist.length > 0) {
+        var junc = junctions[jWorklist.pop()];
+        delete jWorklistMap[junc.id];
+        var oldLive = junc.live || null;
+        analyzeJunction(junc);
+        if (!sortedJsonCompare(oldLive, junc.live)) {
+          // Live set changed, updated predecessor blocks and junctions.
+          for (var b in junc.inblocks) {
+            if (!(b in bWorklistMap)) {
+              bWorklistMap[b] = 1;
+              bWorklist.push(b);
+            }
+            var jPred = blocks[b].entry;
+            if (!(jPred in jWorklistMap)) {
+              jWorklistMap[jPred] = 1;
+              jWorklist.push(jPred);
+            }
+          }
+        }
+      }
+      // Now update the blocks based on the calculated live sets.
+      while (bWorklist.length > 0) {
+        var block = blocks[bWorklist.pop()];
+        delete bWorklistMap[block.id];
+        var oldUse = block.use;
+        analyzeBlock(block);
+        if (!sortedJsonCompare(oldUse, block.use)) {
+          // The use set changed, re-process the entry junction.
+          if (!(block.entry in jWorklistMap)) {
+            jWorklistMap[block.entry] = 1;
+            jWorklist.push(block.entry);
+          }
+        }
+      }
+    }
+
+    // Insist that all function parameters are alive at function entry.
+    // This ensures they will be assigned independent registers, even
+    // if they happen to be unused.
+
+    for (var name in asmData.params) {
+      junctions[ENTRY_JUNCTION].live[name] = 1;
+    }
+
+    // For variables that are live at one or more junctions, we assign them
+    // a consistent register for the entire scope of the function.  Find pairs
+    // of variable that cannot use the same register (the "conflicts") as well
+    // as pairs of variables that we'd like to have share the same register
+    // (the "links").
+
+    var junctionVariables = {};
+
+    function initializeJunctionVariable(name) {
+      junctionVariables[name] = { conf: {}, link: {}, excl: {}, reg: null };
+    }
+
+    for (var i = 0; i < junctions.length; i++) {
+      var junc = junctions[i];
+      for (var name in junc.live) {
+        if (!junctionVariables[name]) initializeJunctionVariable(name);
+        // It conflicts with all other names live at this junction.
+        for (var otherName in junc.live) {
+          if (otherName == name) continue;
+          junctionVariables[name].conf[otherName] = 1;
+        }
+        for (var b in junc.outblocks) {
+          // It conflits with any output vars of successor blocks,
+          // if they're assigned before it goes dead in that block.
+          block = blocks[b];
+          var jSucc = junctions[block.exit];
+          for (var otherName in jSucc.live) {
+            if (junc.live[otherName]) continue;
+            if (block.lastKillLoc[otherName] < block.firstDeadLoc[name]) {
+              if (!junctionVariables[otherName]) initializeJunctionVariable(otherName);
+              junctionVariables[name].conf[otherName] = 1;
+              junctionVariables[otherName].conf[name] = 1;
+            }
+          }
+          // It links with any linkages in the outgoing blocks.
+          var linkName = block.link[name];
+          if (linkName && linkName !== name) {
+            if (!junctionVariables[linkName]) initializeJunctionVariable(linkName);
+            junctionVariables[name].link[linkName] = 1;
+            junctionVariables[linkName].link[name] = 1;
+          }
+        }
+      }
+    }
+
+    // Attempt to sort the junction variables to heuristically reduce conflicts.
+    // Simple starting point: handle the most-conflicted variables first.
+    // This seems to work pretty well.
+
+    var sortedJunctionVariables = keys(junctionVariables);
+    sortedJunctionVariables.sort(function(name1, name2) {
+      var jv1 = junctionVariables[name1];
+      var jv2 = junctionVariables[name2];
+      if (jv1.numConfs === undefined) {
+        jv1.numConfs = setSize(jv1.conf);
+      }
+      if (jv2.numConfs === undefined) {
+        jv2.numConfs = setSize(jv2.conf);
+      }
+      return jv2.numConfs - jv1.numConfs;
+    });
+
+    // We can now assign a register to each junction variable.
+    // Process them in order, trying available registers until we find
+    // one that works, and propagating the choice to linked/conflicted
+    // variables as we go.
+
+    function tryAssignRegister(name, reg) {
+      // Try to assign the given register to the given variable,
+      // and propagate that choice throughout the graph.
+      // Returns true if successful, false if there was a conflict.
+      var jv = junctionVariables[name];
+      if (jv.reg !== null) {
+        return jv.reg === reg;
+      }
+      if (jv.excl[reg]) {
+        return false;
+      }
+      jv.reg = reg;
+      // Exclude use of this register at all conflicting variables.
+      for (var confName in jv.conf) {
+        junctionVariables[confName].excl[reg] = 1;
+      }
+      // Try to propagate it into linked variables.
+      // It's not an error if we can't.
+      for (var linkName in jv.link) {
+        tryAssignRegister(linkName, reg);
+      }
+      return true;
+    }
+
+    NEXTVARIABLE:
+    for (var i = 0; i < sortedJunctionVariables.length; i++) {
+      var name = sortedJunctionVariables[i];
+      // It may already be assigned due to linked-variable propagation.
+      if (junctionVariables[name].reg !== null) {
+        continue NEXTVARIABLE;
+      }
+      // Try to use existing registers first.
+      var allRegs = allRegsByType[localVars[name]];
+      for (var reg in allRegs) {
+        if (tryAssignRegister(name, reg)) {
+          continue NEXTVARIABLE;
+        }
+      }
+      // They're all taken, create a new one.
+      tryAssignRegister(name, createReg(name));
+    }
+
+    // Each basic block can now be processed in turn.
+    // There may be internal-use-only variables that still need a register
+    // assigned, but they can be treated just for this block.  We know
+    // that all inter-block variables are in a good state thanks to
+    // junction variable consistency.
+
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i];
+      if (block.nodes.length === 0) continue;
+      var jEnter = junctions[block.entry];
+      var jExit = junctions[block.exit];
+      // Mark the point at which each input reg becomes dead.
+      // Variables alive before this point must not be assigned
+      // to that register.
+      var inputVars = {}
+      var inputDeadLoc = {};
+      var inputVarsByReg = {};
+      for (var name in jExit.live) {
+        if (!(name in block.kill)) {
+          inputVars[name] = 1;
+          var reg = junctionVariables[name].reg;
+          assert(reg !== null, 'input variable doesnt have a register');
+          inputDeadLoc[reg] = block.firstDeadLoc[name];
+          inputVarsByReg[reg] = name;
+        }
+      }
+      for (var name in block.use) {
+        if (!(name in inputVars)) {
+          inputVars[name] = 1;
+          var reg = junctionVariables[name].reg;
+          assert(reg !== null, 'input variable doesnt have a register');
+          inputDeadLoc[reg] = block.firstDeadLoc[name];
+          inputVarsByReg[reg] = name;
+        }
+      }
+      assert(setSize(setSub(inputVars, jEnter.live)) == 0);
+      // Scan through backwards, allocating registers on demand.
+      // Be careful to avoid conflicts with the input registers.
+      // We consume free registers in last-used order, which helps to
+      // eliminate "x=y" assignments that are the last use of "y".
+      var assignedRegs = {};
+      var freeRegsByType = copy(allRegsByType);
+      // Begin with all live vars assigned per the exit junction.
+      for (var name in jExit.live) {
+        var reg = junctionVariables[name].reg;
+        assert(reg !== null, 'output variable doesnt have a register');
+        assignedRegs[name] = reg;
+        delete freeRegsByType[localVars[name]][reg];
+      }
+      for (var j = 0; j < freeRegsByType.length; j++) {
+        freeRegsByType[j] = keys(freeRegsByType[j]);
+      }
+      // Scan through the nodes in sequence, modifying each node in-place
+      // and grabbing/freeing registers as needed.
+      var maybeRemoveNodes = [];
+      for (var j = block.nodes.length - 1; j >= 0; j--) {
+        var node = block.nodes[j];
+        var name = node[0] === 'assign' ? node[2][1] : node[1];
+        var allRegs = allRegsByType[localVars[name]];
+        var freeRegs = freeRegsByType[localVars[name]];
+        var reg = assignedRegs[name];
+        if (node[0] === 'name') {
+          // A use.  Grab a register if it doesn't have one.
+          if (!reg) {
+            if (name in inputVars && j <= block.firstDeadLoc[name]) {
+              // Assignment to an input variable, must use pre-assigned reg.
+              reg = junctionVariables[name].reg;
+              assignedRegs[name] = reg;
+              for (var k = freeRegs.length - 1; k >= 0; k--) {
+                if (freeRegs[k] === reg) {
+                  freeRegs.splice(k, 1);
+                  break;
+                }
+              }
+            } else {
+              // Try to use one of the existing free registers.
+              // It must not conflict with an input register.
+              for (var k = freeRegs.length - 1; k >= 0; k--) {
+                reg = freeRegs[k];
+                // Check for conflict with input registers.
+                if (block.firstKillLoc[name] <= inputDeadLoc[reg]) {
+                  if (name !== inputVarsByReg[reg]) {
+                    continue;
+                  }
+                }
+                // Found one!
+                assignedRegs[name] = reg;
+                freeRegs.splice(k, 1);
+                break;
+              }
+              // If we didn't find a suitable register, create a new one.
+              if (!assignedRegs[name]) {
+                reg = createReg(name);
+                assignedRegs[name] = reg;
+              }
+            }
+          }
+          node[1] = allRegs[reg];
+        } else {
+          // A kill. This frees the assigned register.
+          assert(reg, 'live variable doesnt have a reg?')
+          node[2][1] = allRegs[reg];
+          freeRegs.push(reg);
+          delete assignedRegs[name];
+          if (node[3][0] === 'name' && node[3][1] in localVars) {
+            maybeRemoveNodes.push([j, node]);
+          }
+        }
+      }
+      // If we managed to create an "x=x" assignments, remove them.
+      for (var j = 0; j < maybeRemoveNodes.length; j++) {
+        var node = maybeRemoveNodes[j][1];
+        if (node[2][1] === node[3][1]) {
+          if (block.isexpr[maybeRemoveNodes[j][0]]) {
+            morphNode(node, node[2]);
+          } else {
+            morphNode(node, ['block', []]);
+          }
+        }
+      }
+    }
+
+    // Assign registers to function params based on entry junction
+
+    var paramRegs = {}
+    if (fun[2]) {
+      for (var i = 0; i < fun[2].length; i++) {
+        var allRegs = allRegsByType[localVars[fun[2][i]]];
+        fun[2][i] = allRegs[junctionVariables[fun[2][i]].reg];
+        paramRegs[fun[2][i]] = 1;
+      }
+    }
+
+    // That's it!
+    // Re-construct the function with appropriate variable definitions.
+ 
+    var finalAsmData = {
+      params: {},
+      vars: {},
+      inlines: asmData.inlines,
+      ret: asmData.ret,
+    };
+    for (var i = 1; i < nextReg; i++) {
+      var reg;
+      for (var type=0; type<allRegsByType.length; type++) {
+        reg = allRegsByType[type][i];
+        if (reg) break;
+      }
+      if (!paramRegs[reg]) {
+        finalAsmData.vars[reg] = type;
+      } else {
+        finalAsmData.params[reg] = type;
+      }
+    }
+    denormalizeAsm(fun, finalAsmData);
+
+    vacuum(fun);
+
+  });
+}
+
 
 // Eliminator aka Expressionizer
 //
@@ -2062,8 +3181,7 @@ function registerize(ast) {
 // In memSafe mode, we are more careful and assume functions can replace HEAP and FUNCTION_TABLE, which
 // can happen in ALLOW_MEMORY_GROWTH mode
 
-var ELIMINATION_SAFE_NODES = set('var', 'assign', 'call', 'if', 'toplevel', 'do', 'return', 'label', 'switch'); // do is checked carefully, however
-var NODES_WITHOUT_ELIMINATION_SIDE_EFFECTS = set('name', 'num', 'string', 'binary', 'sub', 'unary-prefix');
+var ELIMINATION_SAFE_NODES = set('var', 'assign', 'call', 'if', 'toplevel', 'do', 'return', 'label', 'switch', 'binary', 'unary-prefix'); // do is checked carefully, however
 var IGNORABLE_ELIMINATOR_SCAN_NODES = set('num', 'toplevel', 'string', 'break', 'continue', 'dot'); // dot can only be STRING_TABLE.*
 var ABORTING_ELIMINATOR_SCAN_NODES = set('new', 'object', 'function', 'defun', 'for', 'while', 'array', 'throw'); // we could handle some of these, TODO, but nontrivial (e.g. for while, the condition is hit multiple times after the body)
 
@@ -2155,7 +3273,7 @@ function eliminate(ast, memSafe) {
       if (definitions[name] === 1 && uses[name] === 1) {
         potentials[name] = 1;
       } else if (uses[name] === 0 && (!definitions[name] || definitions[name] <= 1)) { // no uses, no def or 1 def (cannot operate on phis, and the llvm optimizer will remove unneeded phis anyhow) (no definition means it is a function parameter, or a local with just |var x;| but no defining assignment)
-        var hasSideEffects = false;
+        var sideEffects = false;
         var value = values[name];
         if (value) {
           // TODO: merge with other side effect code
@@ -2165,15 +3283,10 @@ function eliminate(ast, memSafe) {
           if (!(value[0] === 'seq' && value[1][0] === 'assign' && value[1][2][0] === 'sub' && value[1][2][2][0] === 'binary' && value[1][2][2][1] === '>>' &&
                 value[1][2][2][2][0] === 'name' && value[1][2][2][2][1] === 'tempDoublePtr')) {
             // If not that, then traverse and scan normally.
-            traverse(value, function(node, type) {
-              if (!(type in NODES_WITHOUT_ELIMINATION_SIDE_EFFECTS)) {
-                hasSideEffects = true; // cannot remove this unused variable, constructing it has side effects
-                return true;
-              }
-            });
+            sideEffects = hasSideEffects(value);
           }
         }
-        if (!hasSideEffects) {
+        if (!sideEffects) {
           varsToRemove[name] = !definitions[name] ? 2 : 1; // remove it normally
           sideEffectFree[name] = true;
           // Each time we remove a variable with 0 uses, if its value has no
@@ -2216,7 +3329,7 @@ function eliminate(ast, memSafe) {
     var memoryInvalidated = false;
     var callsInvalidated = false;
     function track(name, value, defNode) { // add a potential that has just been defined to the tracked list, we hope to eliminate it
-      var usesGlobals = false, usesMemory = false, deps = {}, doesCall = false;
+      var usesGlobals = false, usesMemory = false, deps = {}, doesCall = false, hasDeps = false;
       var ignoreName = false; // one-time ignorings of names, as first op in sub and call
       traverse(value, function(node, type) {
         if (type === 'name') {
@@ -2227,6 +3340,7 @@ function eliminate(ast, memSafe) {
             }
             if (!(name in potentials)) { // deps do not matter for potentials - they are defined once, so no complexity
               deps[name] = 1;
+              hasDeps = true;
             }
           } else {
             ignoreName = false;
@@ -2248,6 +3362,7 @@ function eliminate(ast, memSafe) {
         usesMemory: usesMemory,
         defNode: defNode,
         deps: deps,
+        hasDeps: hasDeps,
         doesCall: doesCall
       };
       globalsInvalidated = false;
@@ -2320,7 +3435,7 @@ function eliminate(ast, memSafe) {
       function traverseInOrder(node, ignoreSub, ignoreName) {
         if (abort) return;
         //nesting++; // printErr-related
-        //printErr(spaces(2*(nesting+1)) + 'trav: ' + JSON.stringify(node).substr(0, 50) + ' : ' + keys(tracked) + ' : ' + [allowTracking, ignoreSub, ignoreName]);
+        //printErr(JSON.stringify(node).substr(0, 50) + ' : ' + keys(tracked) + ' : ' + [allowTracking, ignoreSub, ignoreName]);
         var type = node[0];
         if (type === 'assign') {
           var target = node[2];
@@ -2358,7 +3473,12 @@ function eliminate(ast, memSafe) {
               if (allowTracking) track(name, node[3], node);
             }
           } else if (target[0] === 'sub') {
-            if (!isTempDoublePtrAccess(target) && !memoryInvalidated) {
+            if (isTempDoublePtrAccess(target)) {
+              if (!globalsInvalidated) {
+                invalidateGlobals();
+                globalsInvalidated = true;
+              }
+            } else if (!memoryInvalidated) {
               invalidateMemory();
               memoryInvalidated = true;
             }
@@ -2432,14 +3552,16 @@ function eliminate(ast, memSafe) {
           for (var i = 0; i < args.length; i++) {
             traverseInOrder(args[i]);
           }
-          // these two invalidations will also invalidate calls
-          if (!globalsInvalidated) {
-            invalidateGlobals();
-            globalsInvalidated = true;
-          }
-          if (!memoryInvalidated) {
-            invalidateMemory();
-            memoryInvalidated = true;
+          if (callHasSideEffects(node)) {
+            // these two invalidations will also invalidate calls
+            if (!globalsInvalidated) {
+              invalidateGlobals();
+              globalsInvalidated = true;
+            }
+            if (!memoryInvalidated) {
+              invalidateMemory();
+              memoryInvalidated = true;
+            }
           }
         } else if (type === 'if') {
           if (allowTracking) {
@@ -2480,11 +3602,17 @@ function eliminate(ast, memSafe) {
         } else if (type === 'return') {
           if (node[1]) traverseInOrder(node[1]);
         } else if (type === 'conditional') {
+          if (!callsInvalidated) { // invalidate calls, since we cannot eliminate them into a branch of an LLVM select/JS conditional that does not execute
+            invalidateCalls();
+            callsInvalidated = true;
+          }
           traverseInOrder(node[1]);
           traverseInOrder(node[2]);
           traverseInOrder(node[3]);
         } else if (type === 'switch') {
           traverseInOrder(node[1]);
+          var originalTracked = {};
+          for (var o in tracked) originalTracked[o] = 1;
           var cases = node[2];
           for (var i = 0; i < cases.length; i++) {
             var c = cases[i];
@@ -2492,6 +3620,15 @@ function eliminate(ast, memSafe) {
             var stats = c[1];
             for (var j = 0; j < stats.length; j++) {
               traverseInOrder(stats[j]);
+            }
+            // We cannot track from one switch case into another, undo all new trackings TODO: general framework here, use in if-else as well
+            for (var t in tracked) {
+              if (!(t in originalTracked)) {
+                var info = tracked[t];
+                if (info.usesGlobals || info.usesMemory || info.hasDeps) {
+                  delete tracked[t];
+                }
+              }
             }
           }
         } else {
@@ -2612,6 +3749,7 @@ function eliminate(ast, memSafe) {
           }
           if (ifTrue[1][0] && ifTrue[1][0][0] === 'break') {
             var assigns = ifFalse[1];
+            clearEmptyNodes(assigns);
             var loopers = [], helpers = [];
             for (var i = 0; i < assigns.length; i++) {
               if (assigns[i][0] === 'stat' && assigns[i][1][0] === 'assign') {
@@ -2759,16 +3897,16 @@ function minifyGlobals(ast) {
       var vars = node[1];
       for (var i = 0; i < vars.length; i++) {
         var name = vars[i][0];
-        assert(next < extraInfo.names.length);
-        vars[i][0] = minified[name] = extraInfo.names[next++];
+        ensureMinifiedNames(next);
+        vars[i][0] = minified[name] = minifiedNames[next++];
       }
     }
   });
   // add all globals in function chunks, i.e. not here but passed to us
   for (var i = 0; i < extraInfo.globals.length; i++) {
     name = extraInfo.globals[i];
-    assert(next < extraInfo.names.length);
-    minified[name] = extraInfo.names[next++];
+    ensureMinifiedNames(next);
+    minified[name] = minifiedNames[next++];
   }
   // apply minification
   traverse(ast, function(node, type) {
@@ -2780,6 +3918,111 @@ function minifyGlobals(ast) {
     }
   });
   suffix = '// EXTRA_INFO:' + JSON.stringify(minified);
+}
+
+
+function minifyLocals(ast) {
+  assert(asm)
+  assert(extraInfo && extraInfo.globals)
+
+  traverseGeneratedFunctions(ast, function(fun, type) {
+
+    // Analyse the asmjs to figure out local variable names,
+    // but operate on the original source tree so that we don't
+    // miss any global names in e.g. variable initializers.
+    var asmData = normalizeAsm(fun); denormalizeAsm(fun, asmData); // TODO: we can avoid modifying at all here - we just need a list of local vars+params
+    var newNames = {};
+    var usedNames = {};
+
+    // Find all the globals that we need to minify using
+    // pre-assigned names.  Don't actually minify them yet
+    // as that might interfere with local variable names.
+    function isLocalName(name) {
+      return name in asmData.vars || name in asmData.params;
+    }
+    traverse(fun, function(node, type) {
+      if (type === 'name') {
+        var name = node[1];
+        if (!isLocalName(name)) {
+          var minified = extraInfo.globals[name];
+          if (minified){
+            newNames[name] = minified;
+            usedNames[minified] = 1;
+          }
+        }
+      }
+    });
+
+    // The first time we encounter a local name, we assign it a
+    // minified name that's not currently in use.  Allocating on
+    // demand means they're processed in a predicatable order,
+    // which is very handy for testing/debugging purposes.
+    var nextMinifiedName = 0;
+    function getNextMinifiedName() {
+      var minified;
+      while (1) {
+        ensureMinifiedNames(nextMinifiedName);
+        minified = minifiedNames[nextMinifiedName++];
+        // TODO: we can probably remove !isLocalName here
+        if (!usedNames[minified] && !isLocalName(minified)) {
+          return minified;
+        }
+      }
+    }
+
+    // We can also minify loop labels, using a separate namespace
+    // to the variable declarations.
+    var newLabels = {};
+    var nextMinifiedLabel = 0;
+    function getNextMinifiedLabel() {
+      ensureMinifiedNames(nextMinifiedLabel);
+      return minifiedNames[nextMinifiedLabel++];
+    }
+
+    // Traverse and minify all names.
+    if (fun[1] in extraInfo.globals) {
+      fun[1] = extraInfo.globals[fun[1]];
+      assert(fun[1]);
+    }
+    if (fun[2]) {
+      for (var i = 0; i < fun[2].length; i++) {
+        var minified = getNextMinifiedName();
+        newNames[fun[2][i]] = minified;
+        fun[2][i] = minified;
+      }
+    }
+    traverse(fun[3], function(node, type) {
+      if (type === 'name') {
+        var name = node[1];
+        var minified = newNames[name];
+        if (minified) {
+          node[1] = minified;
+        } else if (isLocalName(name)) {
+          minified = getNextMinifiedName();
+          newNames[name] = minified;
+          node[1] = minified;
+        }
+      } else if (type === 'var') {
+        node[1].forEach(function(defn) {
+          var name = defn[0];
+          if (!(name in newNames)) {
+            newNames[name] = getNextMinifiedName();
+          }
+          defn[0] = newNames[name];
+        });
+      } else if (type === 'label') {
+        if (!newLabels[node[1]]) {
+          newLabels[node[1]] = getNextMinifiedLabel();
+        }
+        node[1] = newLabels[node[1]];
+      } else if (type === 'break' || type === 'continue') {
+        if (node[1]) {
+          node[1] = newLabels[node[1]];
+        }
+      }
+    });
+
+  });
 }
 
 // Relocation pass for a shared module (for the functions part of the module)
@@ -2816,7 +4059,7 @@ function relocate(ast) {
             var other = node[3];
             if (base === 0) return other;
             if (other[0] == 'num') {
-              other[1] += base;
+              other[1] = (other[1] + base)|0;
               return other;
             } else {
               node[2] = ['num', base];
@@ -2842,160 +4085,316 @@ function relocate(ast) {
 var NODES_WITHOUT_ELIMINATION_SENSITIVITY = set('name', 'num', 'binary', 'unary-prefix');
 var FAST_ELIMINATION_BINARIES = setUnion(setUnion(USEFUL_BINARY_OPS, COMPARE_OPS), set('+'));
 
-function outline(ast) {
-  function measureSize(ast) {
-    var size = 0;
-    traverse(ast, function() {
-      size++;
-    });
-    return size;
-  }
+function measureSize(ast) {
+  var size = 0;
+  traverse(ast, function() {
+    size++;
+  });
+  return size;
+}
 
-  function aggressiveVariableElimination(func, asmData) {
-    // This removes as many variables as possible. This is often not the best thing because it increases
-    // code size, but it is far preferable to the risk of split functions needing to do more spilling. Specifically,
-    // it finds 'trivial' variables: ones with 1 definition, and that definition is not sensitive to any changes: it
-    // only depends on constants and local variables that are themselves trivial. We can unquestionably eliminate
-    // such variables in a trivial manner.
+function aggressiveVariableEliminationInternal(func, asmData) {
+  // This removes as many variables as possible. This is often not the best thing because it increases
+  // code size, but it is far preferable to the risk of split functions needing to do more spilling, so
+  // we use it when outlining.
+  // Specifically, this finds 'trivial' variables: ones with 1 definition, and that definition is not sensitive to any changes: it
+  // only depends on constants and local variables that are themselves trivial. We can unquestionably eliminate
+  // such variables in a trivial manner.
 
-    var assignments = {};
-    var appearances = {};
-    var defs = {};
-    var considered = {};
+  var assignments = {};
+  var appearances = {};
+  var defs = {};
+  var considered = {};
 
-    traverse(func, function(node, type) {
-      if (type == 'assign' && node[2][0] == 'name') {
-        var name = node[2][1];
-        if (name in asmData.vars) {
-          assignments[name] = (assignments[name] || 0) + 1;
-          appearances[name] = (appearances[name] || 0) - 1; // this appearance is a definition, offset the counting later
-          defs[name] = node;
-        } else {
-          if (name in asmData.params) {
-            considered[name] = true; // this parameter is not ssa, it must be in a hand-optimized function, so it is not trivial
-          }
-        }
-      } else if (type == 'name') {
-        var name = node[1];
-        if (name in asmData.vars) {
-          appearances[name] = (appearances[name] || 0) + 1;
+  traverse(func, function(node, type) {
+    if (type == 'assign' && node[2][0] == 'name') {
+      var name = node[2][1];
+      if (name in asmData.vars) {
+        assignments[name] = (assignments[name] || 0) + 1;
+        appearances[name] = (appearances[name] || 0) - 1; // this appearance is a definition, offset the counting later
+        defs[name] = node;
+      } else {
+        if (name in asmData.params) {
+          assignments[name] = (assignments[name] || 1) + 1; // init to 1 for initial parameter assignment
+          considered[name] = true; // this parameter is not ssa, it must be in a hand-optimized function, so it is not trivial
         }
       }
-    });
+    } else if (type == 'name') {
+      var name = node[1];
+      if (name in asmData.vars) {
+        appearances[name] = (appearances[name] || 0) + 1;
+      }
+    }
+  });
 
-    var allTrivials = {}; // key of a trivial var => size of its (expanded) value, at least 1
+  var allTrivials = {}; // key of a trivial var => size of its (expanded) value, at least 1
 
-    // three levels of variables:
-    // 1. trivial: 1 def (or less), uses nothing sensitive, can be eliminated
-    // 2. safe: 1 def (or less), can be used in a trivial, but cannot itself be eliminated
-    // 3. sensitive: uses a global or memory or something else that prevents trivial elimination.
+  // three levels of variables:
+  // 1. trivial: 1 def (or less), uses nothing sensitive, can be eliminated
+  // 2. safe: 1 def (or less), can be used in a trivial, but cannot itself be eliminated
+  // 3. sensitive: uses a global or memory or something else that prevents trivial elimination.
 
-    function assessTriviality(name) {
-      // only care about vars with 0-1 assignments of (0 for parameters), and can ignore label (which is not explicitly initialized, but cannot be eliminated ever anyhow)
-      if (assignments[name] > 1 || (!(name in asmData.vars) && !(name in asmData.params)) || name == 'label') return false;
-      if (considered[name]) return allTrivials[name];
-      considered[name] = true;
-      var sensitive = false;
-      var size = 0, originalSize = 0;
-      var def = defs[name];
-      if (def) {
-        var value = def[3];
-        originalSize = measureSize(value);
-        if (value) {
-          traverse(value, function recurseValue(node, type) {
-            var one = node[1];
-            if (!(type in NODES_WITHOUT_ELIMINATION_SENSITIVITY)) { // || (type == 'binary' && !(one in FAST_ELIMINATION_BINARIES))) {
-              sensitive = true;
+  function assessTriviality(name) {
+    // only care about vars with 0-1 assignments of (0 for parameters), and can ignore label (which is not explicitly initialized, but cannot be eliminated ever anyhow)
+    if (assignments[name] > 1 || (!(name in asmData.vars) && !(name in asmData.params)) || name == 'label') return false;
+    if (considered[name]) return allTrivials[name];
+    considered[name] = true;
+    var sensitive = false;
+    var size = 0, originalSize = 0;
+    var def = defs[name];
+    if (def) {
+      var value = def[3];
+      originalSize = measureSize(value);
+      if (value) {
+        traverse(value, function recurseValue(node, type) {
+          var one = node[1];
+          if (!(type in NODES_WITHOUT_ELIMINATION_SENSITIVITY)) { // || (type == 'binary' && !(one in FAST_ELIMINATION_BINARIES))) {
+            sensitive = true;
+            return true;
+          }
+          if (type == 'name' && !assessTriviality(one)) {
+            if (assignments[one] > 1 || (!(one in asmData.vars) && !(one in asmData.params))) {
+              sensitive = true; // directly using something sensitive
               return true;
-            }
-            if (type == 'name' && !assessTriviality(one)) {
-              if (assignments[one] > 1 || (!(one in asmData.vars) && !(one in asmData.params))) {
-                sensitive = true; // directly using something sensitive
-                return true;
-              } // otherwise, not trivial, but at least safe.
-            }
-            // if this is a name, it must be a trivial variable (or a safe one) and we know its size
-            size += ((type == 'name') ? allTrivials[one] : 1) || 1;
-          });
-        }
-      }
-      if (!sensitive) {
-        size = size || 1;
-        originalSize = originalSize || 1;
-        var factor = ((appearances[name] - 1) || 0) * (size - originalSize); // If no size change or just one appearance, always ok to trivially eliminate. otherwise, tradeoff
-        if (factor <= 12) {
-          allTrivials[name] = size; // trivial!
-          return true;
-        }
-      }
-      return false;
-    }
-    for (var name in asmData.vars) {
-      assessTriviality(name);
-    }
-    var trivials = {};
-
-    for (var name in allTrivials) { // from now on, ignore parameters
-      if (name in asmData.vars) trivials[name] = true;
-    }
-
-    allTrivials = {};
-
-    var values = {};
-
-    function evaluate(name) {
-      var node = values[name];
-      if (node) return node;
-      values[node] = null; // prevent infinite recursion
-      var def = defs[name];
-      if (def) {
-        node = def[3];
-        if (node[0] == 'name') {
-          var name2 = node[1];
-          if (name2 in trivials) {
-            node = evaluate(name2);
+            } // otherwise, not trivial, but at least safe.
           }
-        } else {
-          traverse(node, function(node, type) {
-            if (type == 'name') {
-              var name2 = node[1];
-              if (name2 in trivials) {
-                return evaluate(name2);
-              }
-            }
-          });
+          // if this is a name, it must be a trivial variable (or a safe one) and we know its size
+          size += ((type == 'name') ? allTrivials[one] : 1) || 1;
+        });
+      }
+    }
+    if (!sensitive) {
+      size = size || 1;
+      originalSize = originalSize || 1;
+      var factor = ((appearances[name] - 1) || 0) * (size - originalSize); // If no size change or just one appearance, always ok to trivially eliminate. otherwise, tradeoff
+      if (factor <= 12) {
+        allTrivials[name] = size; // trivial!
+        return true;
+      }
+    }
+    return false;
+  }
+  for (var name in asmData.vars) {
+    assessTriviality(name);
+  }
+  var trivials = {};
+
+  for (var name in allTrivials) { // from now on, ignore parameters
+    if (name in asmData.vars) trivials[name] = true;
+  }
+
+  allTrivials = {};
+
+  var values = {}, recursives = {};
+
+  function evaluate(name) {
+    var node = values[name];
+    if (node) return node;
+    values[name] = null; // prevent infinite recursion
+    var def = defs[name];
+    if (def) {
+      node = def[3];
+      if (node[0] == 'name') {
+        var name2 = node[1];
+        assert(name2 !== name);
+        if (name2 in trivials) {
+          node = evaluate(name2);
         }
-        values[name] = node;
+      } else {
+        traverse(node, function(node, type) {
+          if (type == 'name') {
+            var name2 = node[1];
+            if (name2 === name) {
+              recursives[name] = 1;
+              return false;
+            }
+            if (name2 in trivials) {
+              return evaluate(name2);
+            }
+          }
+        });
       }
-      return node;
+      values[name] = node;
     }
+    return node;
+  }
 
-    for (var name in trivials) {
-      evaluate(name);
+  for (var name in trivials) {
+    evaluate(name);
+  }
+  for (var name in recursives) {
+    delete trivials[name];
+  }
+
+  for (var name in trivials) {
+    var def = defs[name];
+    if (def) {
+      def.length = 0;
+      def[0] = 'toplevel';
+      def[1] = [];
     }
+    delete asmData.vars[name];
+  }
 
-    for (var name in trivials) {
-      var def = defs[name];
-      if (def) {
-        def.length = 0;
-        def[0] = 'toplevel';
-        def[1] = [];
+  // Perform replacements TODO: save list of uses objects before, replace directly, avoid extra traverse
+  traverse(func, function(node, type) {
+    if (type == 'name') {
+      var name = node[1];
+      if (name in trivials) {
+        var value = values[name];
+        if (value) return copy(value); // must copy, or else the same object can be used multiple times
+        else return emptyNode();
       }
-      delete asmData.vars[name];
     }
+  });
+}
 
-    // Perform replacements TODO: save list of uses objects before, replace directly, avoid extra traverse
-    traverse(func, function(node, type) {
-      if (type == 'name') {
-        var name = node[1];
-        if (name in trivials) {
-          var value = values[name];
-          if (!value) throw 'missing value: ' + [func[1], name, values[name]] + ' - faulty reliance on asm zero-init?';
-          return copy(value); // must copy, or else the same object can be used multiple times
+function aggressiveVariableElimination(ast) {
+  assert(asm, 'need ASM_JS for aggressive variable elimination');
+  traverseGeneratedFunctions(ast, function(func, type) {
+    var asmData = normalizeAsm(func);
+    aggressiveVariableEliminationInternal(func, asmData);
+    denormalizeAsm(func, asmData);
+  });
+}
+
+function outline(ast) {
+  // Try to flatten out code as much as possible, to make outlining more feasible.
+  function flatten(func, asmData) {
+    var minSize = extraInfo.sizeToOutline/4;
+    var helperId = 0;
+    function getHelper() {
+      while (1) {
+        var ret = 'helper$' + (helperId++);
+        if (!(ret in asmData.vars) && !(ret in asmData.params)) {
+          asmData.vars[ret] = ASM_INT;
+          return ret;
+        }
+      }
+    }
+    var ignore = [];
+    traverse(func, function(node) {
+      if (node[0] === 'while' && node[2][0] !== 'block') {
+        node[2] = ['block', [node[2]]]; // so we have a list of statements and can flatten  while(1) switch
+      }
+      var stats = getStatements(node);
+      if (stats) {
+        for (var i = 0; i < stats.length; i++) {
+          var node = stats[i]; // step over param
+          if (ignore.indexOf(node) >= 0) continue;
+          if (node[0] == 'stat') node = node[1];
+          if (ignore.indexOf(node) >= 0) continue;
+          var type = node[0];
+          if (measureSize(node) >= minSize) {
+            if ((type === 'if' && node[3]) || type === 'switch') {
+              var isIf = type === 'if';
+              var reps = [];
+              var helper = getHelper();
+              // clear helper
+              reps.push(['stat', ['assign', true, ['name', helper], ['num', 1]]]); // 1 means continue in ifs
+              // gather parts
+              var parts;
+              if (isIf) {
+                parts = [];
+                var curr = node;
+                while (1) {
+                  if (!curr[3]) {
+                    // we normally expect ..if (cond) { .. } else [if (nextCond) {] (in [] is what we hope to see)
+                    // but are now seeing ..if (cond) { .. } with no else. This might be
+                    //                    ..if (cond) if (nextCond) {
+                    // which vacuum can generate from       if (cond) {} else if (nextCond), making it
+                    //                                      if (!cond) if (nextCond)
+                    // so we undo that, in hopes of making it more flattenable
+                    curr[3] = curr[2];
+                    curr[2] = ['block', []];
+                    curr[1] = simplifyNotCompsDirect(['unary-prefix', '!', curr[1]]);
+                  }
+                  parts.push({ condition: curr[1], body: curr[2] });
+                  curr = curr[3];
+                  if (!curr) break;
+                  if (curr[0] != 'if') {
+                    parts.push({ condition: null, body: curr });
+                    break;
+                  }
+                }
+              } else { // switch
+                var switchVar = getHelper(); // switch var could be an expression
+                reps.push(['stat', ['assign', true, ['name', switchVar], node[1]]]);
+                parts = node[2].map(function(case_) {
+                  return { condition: case_[0], body: case_[1] };
+                });
+              }
+              // chunkify. Each chunk is a chain of if-elses, with the new overhead just on entry and exit
+              var chunks = [];
+              var currSize = 0;
+              var currChunk = [];
+              var force = false; // when we hit a case X: that falls through, we force inclusion of everything until a full case
+              parts.forEach(function(part) {
+                var size = (part.condition ? measureSize(part.condition) : 0) + measureSize(part.body) + 5; // add constant for overhead of extra code
+                assert(size > 0);
+                if (size + currSize >= minSize && currSize && !force) {
+                  chunks.push(currChunk);
+                  currChunk = [];
+                  currSize = 0;
+                }
+                currChunk.push(part);
+                currSize += size;
+                if (!isIf) {
+                  var last = part.body;
+                  last = last[last.length-1];
+                  if (last && last[0] === 'block') last = last[1][last[1].length-1];
+                  if (last && last[0] === 'stat') last = last[1];
+                  force = !last || !(last[0] in ALTER_FLOW);
+                }
+              });
+              assert(currSize);
+              chunks.push(currChunk);
+              // generate flattened code
+              chunks.forEach(function(chunk) {
+                var pre = ['stat', ['assign', true, ['name', helper], ['num', 0]]];
+                if (isIf) {
+                  var chain = null, tail = null;
+                  chunk.forEach(function(part) {
+                    // add to chain
+                    var contents = makeIf(part.condition || ['num', 1], part.body[1]);
+                    if (chain) {
+                      tail[3] = contents;
+                    } else {
+                      chain = contents;
+                      ignore.push(contents);
+                    }
+                    tail = contents;
+                  });
+                  // if none of the ifs were entered, in the final else note that we need to continue
+                  tail[3] = ['block', [['stat', ['assign', true, ['name', helper], ['num', 1]]]]];
+                  reps.push(makeIf(['name', helper], [pre, chain]));
+                } else { // switch
+                  var hasDefault;
+                  var s = makeSwitch(['binary', '|', ['name', switchVar], ['num', 0]], chunk.map(function(part) {
+                    hasDefault = hasDefault || part.condition === null;
+                    return [part.condition, part.body];
+                  }));
+                  // if no default, add one where we note that we need to continue
+                  if (!hasDefault) {
+                    s[2].push([null, [['block', [['stat', ['assign', true, ['name', helper], ['num', 1]]]]]]]);
+                  }
+                  ignore.push(s);
+                  reps.push(makeIf(['name', helper], [pre, s]));
+                }
+              });
+              // replace code and update i
+              stats.splice.apply(stats, [i, 1].concat(reps));
+              i--; // negate loop increment
+              i += reps.length;
+              continue;
+            }
+          }
         }
       }
     });
   }
+
+  var maxTotalOutlinings = Infinity; // debugging tool
 
   // Prepares information for spilling of local variables
   function analyzeFunction(func, asmData) {
@@ -3008,13 +4407,19 @@ function outline(ast) {
     }
     asmData.stackPos = {};
     var stackSize = getStackBumpSize(func);
+    if (stackSize % 8 === 0) stackSize += 8 - (stackSize % 8);
     for (var i = 0; i < stack.length; i++) {
       asmData.stackPos[stack[i]] = stackSize + i*8;
     }
-    // Reserve an extra two spots: one for control flow var, the other for control flow data
-    asmData.extraStackSize = (stack.length + 2)*8;
-    asmData.controlStackPos = stackSize + asmData.extraStackSize - 16;
-    asmData.controlDataStackPos = stackSize + asmData.extraStackSize - 8;
+    // Reserve an extra two spots per possible outlining: one for control flow var, the other for control flow data
+    // The control variables are zeroed out when calling an outlined function, and after using
+    // the value after they return.
+    var size = measureSize(func);
+    asmData.maxOutlinings = Math.min(Math.round(3*size/extraInfo.sizeToOutline), maxTotalOutlinings);
+    asmData.intendedPieces = Math.ceil(size/extraInfo.sizeToOutline);
+    asmData.totalStackSize = stackSize + (stack.length + 2*asmData.maxOutlinings)*8;
+    asmData.controlStackPos = function(i) { return stackSize + (stack.length + i)*8 };
+    asmData.controlDataStackPos = function(i) { return stackSize + (stack.length + i)*8 + 4 };
     asmData.splitCounter = 0;
   }
 
@@ -3030,8 +4435,8 @@ function outline(ast) {
     });
 
     var writes = {};
-    var appearances = {};
-    var hasReturn = false, hasBreak = false, hasContinue = false;
+    var namings = {};
+    var hasReturn = false, hasReturnType = {}, hasBreak = false, hasContinue = false;
     var breaks = {};    // set of labels we break or continue
     var continues = {}; // to (name -> id, just like labels)
     var breakCapturers = 0;
@@ -3041,16 +4446,19 @@ function outline(ast) {
       if (type == 'assign' && node[2][0] == 'name') {
         var name = node[2][1];
         if (name in asmData.vars || name in asmData.params) {
-          writes[name] = 0;
-          appearances[name] = (appearances[name] || 0) - 1; // this appearance is a definition, offset the counting later
+          writes[name] = (writes[name] || 0) + 1;
         }
       } else if (type == 'name') {
         var name = node[1];
         if (name in asmData.vars || name in asmData.params) {
-          appearances[name] = (appearances[name] || 0) + 1;
+          namings[name] = (namings[name] || 0) + 1;
         }
       } else if (type == 'return') {
-        hasReturn = true;
+        if (!node[1]) {
+          hasReturn = true;
+        } else {
+          hasReturnType[detectAsmCoercion(node[1])] = true;
+        }
       } else if (type == 'break') {
         var label = node[1] || 0;
         if (!label && breakCapturers > 0) return; // no label, and captured
@@ -3081,11 +4489,12 @@ function outline(ast) {
     });
 
     var reads = {};
-
-    for (var name in appearances) {
-      if (appearances[name] > 0) reads[name] = 0;
+    for (var v in namings) {
+      var actualReads = namings[v] - (writes[v] || 0);
+      if (actualReads > 0) reads[v] = actualReads;
     }
-    return { writes: writes, reads: reads, hasReturn: hasReturn, hasBreak: hasBreak, hasContinue: hasContinue, breaks: breaks, continues: continues, labels: labels };
+
+    return { writes: writes, reads: reads, hasReturn: hasReturn, hasReturnType: hasReturnType, hasBreak: hasBreak, hasContinue: hasContinue, breaks: breaks, continues: continues, labels: labels };
   }
 
   function makeAssign(dst, src) {
@@ -3106,29 +4515,69 @@ function outline(ast) {
     return ['switch', value, cases];
   }
 
-  var CONTROL_BREAK = 1, CONTROL_BREAK_LABEL = 2, CONTROL_CONTINUE = 3, CONTROL_CONTINUE_LABEL = 4, CONTROL_RETURN_VOID = 5, CONTROL_RETURN_INT = 6, CONTROL_RETURN_DOUBLE = 7;
+  var CONTROL_BREAK = 1, CONTROL_BREAK_LABEL = 2, CONTROL_CONTINUE = 3, CONTROL_CONTINUE_LABEL = 4, CONTROL_RETURN_VOID = 5, CONTROL_RETURN_INT = 6, CONTROL_RETURN_DOUBLE = 7, CONTROL_RETURN_FLOAT = 8;
+  function controlFromAsmType(asmType) {
+    return CONTROL_RETURN_INT + (asmType | 0); // assumes ASM_INT starts at 0, and order of these two is identical!
+  }
 
-  var sizeToOutline = extraInfo.sizeToOutline;
-  var level = 0;
+  var sizeToOutline = null; // customized per function and as we make progress
+  function calculateThreshold(func, asmData) {
+    var size = measureSize(func);
+    if (size <= extraInfo.sizeToOutline) {
+      sizeToOutline = Infinity;
+      //printErr('  no point in trying to reduce the size of ' + func[1] + ' which is ' + size + ' <= ' + extraInfo.sizeToOutline);
+    } else {
+      sizeToOutline = Math.round(size/Math.max(2, asmData.intendedPieces--));
+      //printErr('trying to reduce the size of ' + func[1] + ' which is ' + size + ' (>=? ' + extraInfo.sizeToOutline + '), aim for ' + sizeToOutline);
+    }
+  }
+
+  var level = 0, loops = 0;
+  var outliningParents = {}; // function name => parent it was outlined from
 
   function doOutline(func, asmData, stats, start, end) {
-    printErr(' do outline ' + [func[1], level, 'range:', start, end, 'of', stats.length]);
+    if (asmData.splitCounter === asmData.maxOutlinings) return [];
+    if (!extraInfo.allowCostlyOutlines) var originalStats = copy(stats);
     var code = stats.slice(start, end+1);
-    var newIdent = func[1] + '$' + (asmData.splitCounter++);
-    // add spills and reads before and after the call to the outlined code, and in the outlined code itself
+    var originalCodeSize =  measureSize(code);
+    var funcSize = measureSize(func);
+    var outlineIndex = asmData.splitCounter++;
+    var newIdent = func[1] + '$' + outlineIndex;
+    // analyze variables, and find 'owned' variables - that only appear in the outlined code, and do not need any spill support
     var codeInfo = analyzeCode(func, asmData, code);
+    var allCodeInfo = analyzeCode(func, asmData, func);
+    var owned = { sp: 1 }; // sp is always owned, each has its own
+    keys(setUnion(codeInfo.reads, codeInfo.writes)).forEach(function(v) {
+      if (allCodeInfo.reads[v] === codeInfo.reads[v] && allCodeInfo.writes[v] === codeInfo.writes[v] && !(v in asmData.params)) {
+        owned[v] = 1;
+      }
+    });
     var reps = [];
-    for (var v in codeInfo.reads) {
-      if (v != 'sp') {
+    // add spills
+    function orderFunc(x, y) {
+      return (asmData.stackPos[x] - asmData.stackPos[y]) || x.localeCompare(y);
+    }
+    var sortedReadsAndWrites = keys(setUnion(codeInfo.reads, codeInfo.writes)).sort(orderFunc);
+    var sortedWrites = keys(codeInfo.writes).sort(orderFunc);
+    sortedReadsAndWrites.forEach(function(v) {
+      if (!(v in owned)) {
         reps.push(['stat', ['assign', true, ['sub', ['name', getAsmType(v, asmData) == ASM_INT ? 'HEAP32' : 'HEAPF32'], ['binary', '>>', ['binary', '+', ['name', 'sp'], ['num', asmData.stackPos[v]]], ['num', '2']]], ['name', v]]]);
       }
-    }
+    });
+    // wipe out control variable
+    reps.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos(outlineIndex)), ['num', 0])]);
+    reps.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlDataStackPos(outlineIndex)), ['num', 0])]); // XXX not really needed
+    // do the call
     reps.push(['stat', ['call', ['name', newIdent], [['name', 'sp']]]]);
-    for (var v in codeInfo.writes) {
-      reps.push(['stat', ['assign', true, ['name', v], makeAsmCoercion(['sub', ['name', getAsmType(v, asmData) == ASM_INT ? 'HEAP32' : 'HEAPF32'], ['binary', '>>', ['binary', '+', ['name', 'sp'], ['num', asmData.stackPos[v]]], ['num', '2']]], getAsmType(v, asmData))]]);
-    }
+    // add unspills
+    sortedWrites.forEach(function(v) {
+      if (!(v in owned)) {
+        reps.push(['stat', ['assign', true, ['name', v], makeAsmCoercion(['sub', ['name', getAsmType(v, asmData) == ASM_INT ? 'HEAP32' : 'HEAPF32'], ['binary', '>>', ['binary', '+', ['name', 'sp'], ['num', asmData.stackPos[v]]], ['num', '2']]], getAsmType(v, asmData))]]);
+      }
+    });
+
     // Generate new function
-    if (codeInfo.hasReturn || codeInfo.hasBreak || codeInfo.hasContinue) {
+    if (codeInfo.hasReturn || codeInfo.hasReturnType[ASM_INT] || codeInfo.hasReturnType[ASM_DOUBLE] || codeInfo.hasReturnType[ASM_FLOAT] || codeInfo.hasBreak || codeInfo.hasContinue) {
       // we need to capture all control flow using a top-level labeled one-time loop in the outlined function
       var breakCapturers = 0;
       var continueCapturers = 0;
@@ -3144,16 +4593,17 @@ function outline(ast) {
         if (stats) {
           for (var i = 0; i < stats.length; i++) {
             var node = stats[i]; // step all over node and type here, for convenience
+            if (node[0] == 'stat') node = node[1];
             var type = node[0];
             var ret = null;
             if (type == 'return') {
               ret = [];
               if (!node[1]) {
-                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos), ['num', CONTROL_RETURN_VOID])]);
+                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos(outlineIndex)), ['num', CONTROL_RETURN_VOID])]);
               } else {
                 var type = detectAsmCoercion(node[1], asmData);
-                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos), ['num', type == ASM_INT ? CONTROL_RETURN_INT : CONTROL_RETURN_DOUBLE])]);
-                ret.push(['stat', makeAssign(makeStackAccess(type, asmData.controlDataStackPos), node[1])]);
+                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos(outlineIndex)), ['num', controlFromAsmType(type)])]);
+                ret.push(['stat', makeAssign(makeStackAccess(type, asmData.controlDataStackPos(outlineIndex)), node[1])]);
               }
               ret.push(['stat', ['break', 'OL']]);
             } else if (type == 'break') {
@@ -3161,20 +4611,20 @@ function outline(ast) {
               if (label == 'OL') continue; // this was just added before us, it is new replacement code
               if (!label && breakCapturers > 0) continue; // no label, and captured
               if (label && (label in codeInfo.labels)) continue; // label, and defined in this code, so captured
-              ret = [['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos), ['num', label ? CONTROL_BREAK_LABEL : CONTROL_BREAK])]];
+              ret = [['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos(outlineIndex)), ['num', label ? CONTROL_BREAK_LABEL : CONTROL_BREAK])]];
               if (label) {
                 assert(label in codeInfo.breaks);
-                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlDataStackPos), ['num', codeInfo.breaks[label]])]);
+                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlDataStackPos(outlineIndex)), ['num', codeInfo.breaks[label]])]);
               }
               ret.push(['stat', ['break', 'OL']]);
             } else if (type == 'continue') {
               var label = node[1] || 0;
               if (!label && continueCapturers > 0) continue; // no label, and captured
               if (label && (label in codeInfo.labels)) continue; // label, and defined in this code, so captured
-              ret = [['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos), ['num', label ? CONTROL_CONTINUE_LABEL : CONTROL_CONTINUE])]];
+              ret = [['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos(outlineIndex)), ['num', label ? CONTROL_CONTINUE_LABEL : CONTROL_CONTINUE])]];
               if (label) {
                 assert(label in codeInfo.continues);
-                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlDataStackPos), ['num', codeInfo.continues[label]])]);
+                ret.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlDataStackPos(outlineIndex)), ['num', codeInfo.continues[label]])]);
               }
               ret.push(['stat', ['break', 'OL']]);
             }
@@ -3193,92 +4643,191 @@ function outline(ast) {
         }
       });
       code = [['label', 'OL', ['do', ['num', 0], ['block', code]]]]; // do this after processing, to not confuse breakCapturers etc.
-      // read the control data at the callsite to the outlined function
+      // read the control data at the callsite to the outlined function, and clear the control values
+      reps.push(['stat', makeAssign(
+        ['name', 'tempValue'],
+        makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos(outlineIndex)), ASM_INT)
+      )]);
+      reps.push(['stat', makeAssign(
+        ['name', 'tempInt'],
+        makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlDataStackPos(outlineIndex)), ASM_INT)
+      )]);
+      reps.push(['stat', makeAssign(
+        ['name', 'tempDouble'],
+        makeAsmCoercion(makeStackAccess(ASM_DOUBLE, asmData.controlDataStackPos(outlineIndex)), ASM_DOUBLE)
+      )]);
+      reps.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlStackPos(outlineIndex)), ['num', 0])]);
+      reps.push(['stat', makeAssign(makeStackAccess(ASM_INT, asmData.controlDataStackPos(outlineIndex)), ['num', 0])]); // XXX not really needed
+      // use the control data information
       if (codeInfo.hasReturn) {
         reps.push(makeIf(
-          makeComparison(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos), ASM_INT), '==', ['num', CONTROL_RETURN_VOID]),
+          makeComparison(makeAsmCoercion(['name', 'tempValue'], ASM_INT), '==', ['num', CONTROL_RETURN_VOID]),
           [['stat', ['return']]]
         ));
+      }
+      for (var returnType in codeInfo.hasReturnType) {
         reps.push(makeIf(
-          makeComparison(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos), ASM_INT), '==', ['num', CONTROL_RETURN_INT]),
-          [['stat', ['return', makeStackAccess(ASM_INT, asmData.controlDataStackPos)]]]
-        ));
-        reps.push(makeIf(
-          makeComparison(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos), ASM_INT), '==', ['num', CONTROL_RETURN_DOUBLE]),
-          [['stat', ['return', makeStackAccess(ASM_DOUBLE, asmData.controlDataStackPos)]]]
+          makeComparison(makeAsmCoercion(['name', 'tempValue'], ASM_INT), '==', ['num', controlFromAsmType(returnType)]),
+          [['stat', ['return', makeAsmCoercion(['name', 'tempInt'], returnType | 0)]]]
         ));
       }
       if (codeInfo.hasBreak) {
         reps.push(makeIf(
-          makeComparison(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos), ASM_INT), '==', ['num', CONTROL_BREAK]),
+          makeComparison(makeAsmCoercion(['name', 'tempValue'], ASM_INT), '==', ['num', CONTROL_BREAK]),
           [['stat', ['break']]]
         ));
         if (keys(codeInfo.breaks).length > 0) {
           reps.push(makeIf(
-            makeComparison(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos), ASM_INT), '==', ['num', CONTROL_BREAK_LABEL]),
-            [makeSwitch(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlDataStackPos), ASM_INT), keys(codeInfo.breaks).map(function(key) {
+            makeComparison(makeAsmCoercion(['name', 'tempValue'], ASM_INT), '==', ['num', CONTROL_BREAK_LABEL]),
+            [makeSwitch(makeAsmCoercion(['name', 'tempInt'], ASM_INT), keys(codeInfo.breaks).map(function(key) {
               var id = codeInfo.breaks[key];
-              return [['num', id], [['stat', ['break', key]]]];
+              return [['num', id], [['block', [['stat', ['break', key]]]]]];
             }))]
           ));
         }
       }
       if (codeInfo.hasContinue) {
         reps.push(makeIf(
-          makeComparison(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos), ASM_INT), '==', ['num', CONTROL_CONTINUE]),
+          makeComparison(makeAsmCoercion(['name', 'tempValue'], ASM_INT), '==', ['num', CONTROL_CONTINUE]),
           [['stat', ['continue']]]
         ));
         if (keys(codeInfo.continues).length > 0) {
           reps.push(makeIf(
-            makeComparison(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlStackPos), ASM_INT), '==', ['num', CONTROL_CONTINUE_LABEL]),
-            [makeSwitch(makeAsmCoercion(makeStackAccess(ASM_INT, asmData.controlDataStackPos), ASM_INT), keys(codeInfo.continues).map(function(key) {
+            makeComparison(makeAsmCoercion(['name', 'tempValue'], ASM_INT), '==', ['num', CONTROL_CONTINUE_LABEL]),
+            [makeSwitch(makeAsmCoercion(['name', 'tempInt'], ASM_INT), keys(codeInfo.continues).map(function(key) {
               var id = codeInfo.continues[key];
-              return [['num', id], [['stat', ['continue', key]]]];
+              return [['num', id], [['block', [['stat', ['continue', key]]]]]];
             }))]
           ));
         }
       }
     }
     // add spills and unspills in outlined code outside the OL loop
-    for (var v in codeInfo.reads) {
-      if (v != 'sp') {
+    sortedReadsAndWrites.reverse();
+    sortedReadsAndWrites.forEach(function(v) {
+      if (!(v in owned)) {
         code.unshift(['stat', ['assign', true, ['name', v], makeAsmCoercion(['sub', ['name', getAsmType(v, asmData) == ASM_INT ? 'HEAP32' : 'HEAPF32'], ['binary', '>>', ['binary', '+', ['name', 'sp'], ['num', asmData.stackPos[v]]], ['num', '2']]], getAsmType(v, asmData))]]);
       }
-    }
-    for (var v in codeInfo.writes) {
-      code.push(['stat', ['assign', true, ['sub', ['name', getAsmType(v, asmData) == ASM_INT ? 'HEAP32' : 'HEAPF32'], ['binary', '>>', ['binary', '+', ['name', 'sp'], ['num', asmData.stackPos[v]]], ['num', '2']]], ['name', v]]]);
-    }
+    });
+    sortedWrites.forEach(function(v) {
+      if (!(v in owned)) {
+        code.push(['stat', ['assign', true, ['sub', ['name', getAsmType(v, asmData) == ASM_INT ? 'HEAP32' : 'HEAPF32'], ['binary', '>>', ['binary', '+', ['name', 'sp'], ['num', asmData.stackPos[v]]], ['num', '2']]], ['name', v]]]);
+      }
+    });
     // finalize
     var newFunc = ['defun', newIdent, ['sp'], code];
-    var newAsmData = { params: { sp: ASM_INT }, vars: {} };
+    var newAsmData = { params: { sp: ASM_INT }, vars: {}, inlines: asmData.inlines };
     for (var v in codeInfo.reads) {
       if (v != 'sp') newAsmData.vars[v] = getAsmType(v, asmData);
     }
     for (var v in codeInfo.writes) {
-      assert(v != 'sp');
+      assert(v != 'sp'); // we send sp as a read-only parameter, cannot be written to in outlined code
       newAsmData.vars[v] = getAsmType(v, asmData);
     }
     denormalizeAsm(newFunc, newAsmData);
+    // add outline call markers (we cannot do later outlinings that cut through an outlining call)
+    reps.unshift(['begin-outline-call', newIdent]);
+    reps.push(['end-outline-call', newIdent]);
     // replace in stats
     stats.splice.apply(stats, [start, end-start+1].concat(reps));
+    // final evaluation and processing
+    if (!extraInfo.allowCostlyOutlines && (measureSize(func) >= funcSize || measureSize(newFunc) >= funcSize)) {
+      //printErr('aborted outline attempt ' + [measureSize(func), measureSize(newFunc), ' one of which >= ', funcSize]);
+      // abort, this was pointless
+      stats.length = originalStats.length;
+      for (var i = 0; i < stats.length; i++) stats[i] = originalStats[i];
+      asmData.splitCounter--;
+      return [];
+    }
+    maxTotalOutlinings--;
+    for (var v in owned) {
+      if (v != 'sp') delete asmData.vars[v]; // parent does not need these anymore
+    }
+    // if we just removed a final return from the original function, add one
+    var last = getStatements(func)[getStatements(func).length-1];
+    if (last[0] === 'stat') last = last[1];
+    if (last[0] !== 'return') {
+      for (var returnType in codeInfo.hasReturnType) {
+        getStatements(func).push(['stat', ['return', makeAsmCoercion(['num', 0], returnType | 0)]]);
+        break;
+      }
+    }
+    outliningParents[newIdent] = func[1];
+    //printErr('performed outline ' + [func[1], newIdent, 'pre size', originalCodeSize, 'resulting size', measureSize(code), 'overhead (w/r):', setSize(setSub(codeInfo.writes, owned)), setSize(setSub(codeInfo.reads, owned)), ' owned: ', setSize(owned), ' left: ', setSize(asmData.vars), setSize(asmData.params), ' loopsDepth: ', loops]);
+    calculateThreshold(func, asmData);
     return [newFunc];
   }
 
   function outlineStatements(func, asmData, stats, maxSize) {
     level++;
-    if (measureSize(stats) < sizeToOutline) return;
+    //printErr('outlineStatements: ' + [func[1], level, measureSize(func)]);
+    var lastSize = measureSize(stats);
+    if (lastSize < sizeToOutline) { level--; return }
     var ret = [];
     var sizeSeen = 0;
     var end = stats.length-1;
     var i = stats.length;
-    var minIndex = stats == getStatements(func) ? getFirstIndexInNormalized(func, asmData) : 0;
-    while (--i >= minIndex) {
+    var canRestart = false;
+    var minIndex = 0;
+    function calcMinIndex() {
+      if (stats == getStatements(func)) {
+        minIndex = getFirstIndexInNormalized(func, asmData);
+        for (var i = minIndex; i < stats.length; i++) {
+          var stat = stats[i];
+          if (stat[0] == 'stat') stat = stat[1];
+          if (stat[0] == 'assign' && stat[2][0] == 'name' && stat[2][1] == 'sp') {
+            // cannot outline |sp = |
+            minIndex = i+1;
+            // When followed by a STACKTOP bump, preserve that too (we may need to replace it later)
+            stat = stats[i+1];
+            if (stat[0] == 'stat') stat = stat[1];
+            if (stat && stat[0] == 'assign' && stat[2][0] == 'name' && stat[2][1] == 'STACKTOP') {
+              minIndex = i+2;
+            }
+          }
+        }
+      }
+    }
+    function done() {
+      return asmData.splitCounter >= asmData.maxOutlinings || measureSize(func) <= extraInfo.sizeToOutline;
+    }
+    while (1) {
+      i--;
+      calcMinIndex(); // TODO: optimize
+      if (i < minIndex) {
+        // we might be done. but, if we have just outlined, do a further attempt from the beginning.
+        // (but only if the total costs are not extravagant)
+        var currSize = measureSize(stats);
+        var outlinedSize = measureSize(ret);
+        if (canRestart && currSize > 1.2*sizeToOutline && lastSize - currSize >= 0.75*sizeToOutline) {
+          //printErr('restarting ' + func[1] + ' since ' + [currSize, outlinedSize, lastSize] + ' in level ' + level);
+          lastSize = currSize;
+          i = stats.length;
+          end = stats.length-1;
+          sizeSeen = 0;
+          canRestart = false;
+          continue;
+        } else {
+          break;
+        }
+      }
+
       var stat = stats[i];
+      while (stat[0] === 'end-outline-call') {
+        // we cannot outline through an outline call, so include all of it
+        while (stats[--i][0] !== 'begin-outline-call') {
+          assert(i >= minIndex+1);
+          assert(stats[i][0] !== 'end-outline-call');
+        }
+        stat = stats[i];
+      }
+
       var size = measureSize(stat);
       //printErr(level + ' size          ' + [i, size]);
       if (size >= sizeToOutline) {
         // this by itself is big enough to inline, recurse into it and find statements to split on
         var subStatements = null;
+        var pre = ret.length;
         traverse(stat, function(node, type) {
           if (type == 'block') {
             if (measureSize(node) >= sizeToOutline) {
@@ -3286,16 +4835,29 @@ function outline(ast) {
               if (subRet && subRet.length > 0) ret.push.apply(ret, subRet);
             }
             return null; // do not recurse into children, outlineStatements will do so if necessary
+          } else if (type == 'while') {
+            loops++;
+          }
+        }, function(node, type) {
+          if (type == 'while') {
+            loops--;
           }
         });
-        sizeSeen = 0;
-        continue;
+        if (ret.length > pre) {
+          // we outlined recursively, reset our state here
+          //printErr('successful outline in recursion ' + func[1] + ' due to recursive in level ' + level);
+          if (done()) break;
+          end = i-1;
+          sizeSeen = 0;
+          canRestart = true;
+          continue;
+        }
       }
       sizeSeen += size;
-      // If this is big enough to outline, but no too big (if very close to the size of the full function,
+      // If this is big enough to outline, but not too big (if very close to the size of the full function,
       // outlining is pointless; remove stats from the end to try to achieve the good case), then outline.
       // Also, try to reduce the size if it is much larger than the hoped-for size
-      while ((sizeSeen > maxSize || sizeSeen > 2*sizeToOutline) && i < end) {
+      while ((sizeSeen > maxSize || sizeSeen > 2*sizeToOutline) && end > i && stats[end][0] !== 'begin-outline-call' && stats[end][0] !== 'end-outline-call') {
         sizeSeen -= measureSize(stats[end]);
         if (sizeSeen >= sizeToOutline) {
           end--;
@@ -3304,10 +4866,31 @@ function outline(ast) {
           break;
         }
       }
+      // verify we are not outlining through an outline call
+      var sum = 0;
+      stats.slice(i, end+1).forEach(function(stat) {
+        if (stat[0] == 'begin-outline-call') {
+          assert(sum == 0);
+          sum++;
+        } else if (stat[0] == 'end-outline-call') {
+          assert(sum == 1);
+          sum--;
+        }
+      });
+      assert(sum == 0);
+      // final decision and action
+      //printErr(' will try done working on sizeSeen due to ' + [(sizeSeen > maxSize || sizeSeen > 2*sizeToOutline), end > i , stats[end][0] !== 'begin-outline-call' , stats[end][0] !== 'end-outline-call'] + '  ...  ' + [sizeSeen, sizeToOutline, maxSize, sizeSeen >= sizeToOutline, sizeSeen <= maxSize]);
       if (sizeSeen >= sizeToOutline && sizeSeen <= maxSize) {
-        ret.push.apply(ret, doOutline(func, asmData, stats, i, end)); // outline [i, .. ,end] inclusive
+        assert(i >= minIndex);
+        var newFuncs = doOutline(func, asmData, stats, i, end); // outline [i, .. ,end] inclusive
+        if (newFuncs.length) {
+          ret.push.apply(ret, newFuncs);
+        }
+        if (done()) break;
         sizeSeen = 0;
         end = i-1;
+        canRestart = true;
+        continue;
       }
     }
     level--;
@@ -3323,6 +4906,10 @@ function outline(ast) {
 
   var funcs = ast[1];
 
+  var maxTotalFunctions = Infinity; // debugging tool
+
+  //printErr('\n');
+
   var more = true;
   while (more) {
     more = false;
@@ -3330,27 +4917,51 @@ function outline(ast) {
     var newFuncs = [];
 
     funcs.forEach(function(func) {
+      vacuum(func); // clear out empty nodes that affect code size
       var asmData = normalizeAsm(func);
       var size = measureSize(func);
-      if (size >= sizeToOutline) {
-        aggressiveVariableElimination(func, asmData);
+      if (size >= extraInfo.sizeToOutline && maxTotalFunctions > 0) {
+        maxTotalFunctions--;
+        aggressiveVariableEliminationInternal(func, asmData);
+        flatten(func, asmData);
         analyzeFunction(func, asmData);
+        calculateThreshold(func, asmData);
         var stats = getStatements(func);
-        var ret = outlineStatements(func, asmData, stats, 0.5*size);
+        var ret = outlineStatements(func, asmData, stats, 0.9*size);
+        assert(level == 0);
         if (ret && ret.length > 0) {
           newFuncs.push.apply(newFuncs, ret);
           // We have outlined. Add stack support
-          var extraSpace = asmData.extraStackSize;
           if ('sp' in asmData.vars) {
             // find stack bump (STACKTOP = STACKTOP + X | 0) and add the extra space
             var stackBumpNode = getStackBumpNode(stats);
-            if (stackBumpNode) stackBumpNode[3][2][3][1] += extraSpace;
+            if (stackBumpNode) {
+              stackBumpNode[3][2][3][1] = asmData.totalStackSize;
+            } else {
+              // sp exists, but no stack bump, so we need to add it
+              var found = false;
+              for (var i = 0; i < stats.length; i++) {
+                var stat = stats[i];
+                if (stat[0] === 'stat') stat = stat[1];
+                if (stat[0] === 'assign' && stat[2][0] === 'name' && stat[2][1] === 'sp') {
+                  var newNode = ['stat', makeAssign(['name', 'STACKTOP'], ['binary', '|', ['binary', '+', ['name', 'STACKTOP'], ['num', asmData.totalStackSize]], ['num', 0]])];
+                  if (i+1 < stats.length) {
+                    stats.splice(i+1, 0, newNode);
+                  } else {
+                    stats.push(newNode);
+                  }
+                  found = true;
+                  break;
+                }
+              }
+              assert(found);
+            }
           } else if (!('sp' in asmData.params)) { // if sp is a param, then we are an outlined function, no need to add stack support for us
             // add sp variable and stack bump
             var index = getFirstIndexInNormalized(func, asmData);
             stats.splice(index, 0,
               ['stat', makeAssign(['name', 'sp'], ['name', 'STACKTOP'])],
-              ['stat', makeAssign(['name', 'STACKTOP'], ['binary', '|', ['binary', '+', ['name', 'STACKTOP'], ['num', extraSpace]], ['num', 0]])]
+              ['stat', makeAssign(['name', 'STACKTOP'], ['binary', '|', ['binary', '+', ['name', 'STACKTOP'], ['num', asmData.totalStackSize]], ['num', 0]])]
             );
             asmData.vars.sp = ASM_INT; // no need to add to vars, we are about to denormalize anyhow
             // we added sp, so we must add stack popping
@@ -3377,11 +4988,15 @@ function outline(ast) {
             }
           }
         }
+        if (ret) {
+          ret.push(func);
+          //printErr('... resulting sizes of ' + func[1] + ' is ' + ret.map(measureSize) + '\n');
+        }
       }
       denormalizeAsm(func, asmData);
     });
 
-    sizeToOutline *= 2; // be more and more conservative about outlining as we look into outlined functions
+    funcs = null;
 
     // TODO: control flow: route returns and breaks. outlined code should have all breaks/continues/returns break into the outermost scope,
     //       after setting a state variable, etc.
@@ -3390,10 +5005,137 @@ function outline(ast) {
       // add new functions to the toplevel, or create a toplevel if there isn't one
       ast[1].push.apply(ast[1], newFuncs);
 
-      funcs = newFuncs;
-      more = true;
+      // TODO: check if in some cases we do need to outline new functions
+      //funcs = newFuncs.filter(function(newFunc) {
+      //  // recursively outline if we have a large new function that did not come at a high cost
+      //  return measureSize(newFunc) > sizeToOutline && costs[newFunc[1]] < 0.1*sizeToOutline;
+      //});
+      //more = funcs.length > 0;
     }
   }
+
+  // clear out markers
+  traverse(ast, function(node, type) {
+    if (type === 'begin-outline-call' || type === 'end-outline-call') return emptyNode();
+  });
+}
+
+function safeHeap(ast) {
+  function fixPtr(ptr, heap) {
+    switch (heap) {
+      case 'HEAP8':   case 'HEAPU8': break;
+      case 'HEAP16':  case 'HEAPU16': {
+        if (ptr[0] === 'binary') {
+          assert(ptr[1] === '>>' && ptr[3][0] === 'num' && ptr[3][1] === 1);
+          ptr = ptr[2]; // skip the shift
+        } else {
+          ptr = ['binary', '*', ptr, ['num', 2]]; // was unshifted, convert to absolute address
+        }
+        break;
+      }
+      case 'HEAP32':  case 'HEAPU32': {
+        if (ptr[0] === 'binary') {
+          assert(ptr[1] === '>>' && ptr[3][0] === 'num' && ptr[3][1] === 2);
+          ptr = ptr[2]; // skip the shift
+        } else {
+          ptr = ['binary', '*', ptr, ['num', 4]]; // was unshifted, convert to absolute address
+        }
+        break;
+      }
+      case 'HEAPF32': {
+        if (ptr[0] === 'binary') {
+          assert(ptr[1] === '>>' && ptr[3][0] === 'num' && ptr[3][1] === 2);
+          ptr = ptr[2]; // skip the shift
+        } else {
+          ptr = ['binary', '*', ptr, ['num', 4]]; // was unshifted, convert to absolute address
+        }
+        break;
+      }
+      case 'HEAPF64': {
+        if (ptr[0] === 'binary') {
+          assert(ptr[1] === '>>' && ptr[3][0] === 'num' && ptr[3][1] === 3);
+          ptr = ptr[2]; // skip the shift
+        } else {
+          ptr = ['binary', '*', ptr, ['num', 8]]; // was unshifted, convert to absolute address
+        }
+        break;
+      }
+      default: throw 'bad heap ' + heap;
+    }
+    ptr = ['binary', '|', ptr, ['num', 0]];
+    return ptr;
+  }
+  traverseGenerated(ast, function(node, type) {
+    if (type === 'assign') {
+      if (node[1] === true && node[2][0] === 'sub') {
+        var heap = node[2][1][1];
+        var ptr = fixPtr(node[2][2], heap);
+        var value = node[3];
+        // SAFE_HEAP_STORE(ptr, value, bytes, isFloat) 
+        switch (heap) {
+          case 'HEAP8':   case 'HEAPU8': {
+            return ['call', ['name', 'SAFE_HEAP_STORE'], [ptr, makeAsmCoercion(value, ASM_INT), ['num', 1], ['num', '0']]];
+          }
+          case 'HEAP16':  case 'HEAPU16': {
+            return ['call', ['name', 'SAFE_HEAP_STORE'], [ptr, makeAsmCoercion(value, ASM_INT), ['num', 2], ['num', '0']]];
+          }
+          case 'HEAP32':  case 'HEAPU32': {
+            return ['call', ['name', 'SAFE_HEAP_STORE'], [ptr, makeAsmCoercion(value, ASM_INT), ['num', 4], ['num', '0']]];
+          }
+          case 'HEAPF32': {
+            return ['call', ['name', 'SAFE_HEAP_STORE'], [ptr, makeAsmCoercion(value, ASM_DOUBLE), ['num', 4], ['num', '1']]];
+          }
+          case 'HEAPF64': {
+            return ['call', ['name', 'SAFE_HEAP_STORE'], [ptr, makeAsmCoercion(value, ASM_DOUBLE), ['num', 8], ['num', '1']]];
+          }
+          default: throw 'bad heap ' + heap;
+        }
+      }
+    } else if (type === 'sub') {
+      var heap = node[1][1];
+      if (heap[0] !== 'H') return;
+      var ptr = fixPtr(node[2], heap);
+      // SAFE_HEAP_LOAD(ptr, bytes, isFloat) 
+      switch (heap) {
+        case 'HEAP8': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 1], ['num', '0'], ['num', '0']]], ASM_INT);
+        }
+        case 'HEAPU8': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 1], ['num', '0'], ['num', '1']]], ASM_INT);
+        }
+        case 'HEAP16': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 2], ['num', '0'], ['num', '0']]], ASM_INT);
+        }
+        case 'HEAPU16': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 2], ['num', '0'], ['num', '1']]], ASM_INT);
+        }
+        case 'HEAP32': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 4], ['num', '0'], ['num', '0']]], ASM_INT);
+        }
+        case 'HEAPU32': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 4], ['num', '0'], ['num', '1']]], ASM_INT);
+        }
+        case 'HEAPF32': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 4], ['num', '1'], ['num', '0']]], ASM_DOUBLE);
+        }
+        case 'HEAPF64': {
+          return makeAsmCoercion(['call', ['name', 'SAFE_HEAP_LOAD'], [ptr, ['num', 8], ['num', '1'], ['num', '0']]], ASM_DOUBLE);
+        }
+        default: throw 'bad heap ' + heap;
+      }
+    }
+  });
+}
+
+function optimizeFrounds(ast) {
+  // collapse fround(fround(..)), which can happen due to elimination
+  function fix(node) {
+    traverseChildren(node, fix);
+    if (node[0] === 'call' && node[1][0] === 'name' && node[1][1] === 'Math_fround' && node[2][0][0] === 'call' && node[2][0][1][0] === 'name' && node[2][0][1][1] === 'Math_fround') {
+      return node[2][0];
+    }
+  }
+  traverseChildren(ast, fix);
 }
 
 // Last pass utilities
@@ -3424,7 +5166,7 @@ function fixDotZero(js) {
 function asmLastOpts(ast) {
   traverseGeneratedFunctions(ast, function(fun) {
     traverse(fun, function(node, type) {
-      if (type === 'while' && node[1][0] === 'num' && node[1][1] === 1 && node[2][0] === 'block') {
+      if (type === 'while' && node[1][0] === 'num' && node[1][1] === 1 && node[2][0] === 'block' && node[2].length == 2) {
         // This is at the end of the pipeline, we can assume all other optimizations are done, and we modify loops
         // into shapes that might confuse other passes
 
@@ -3455,11 +5197,27 @@ function asmLastOpts(ast) {
           node[1] = simplifyNotCompsDirect(['unary-prefix', '!', conditionToBreak]);
           return node;
         }
-      } else if (type == 'binary' && node[1] == '&' && node[3][0] == 'unary-prefix' && node[3][1] == '-' && node[3][2][0] == 'num' && node[3][2][1] == 1) {
-        // Change &-1 into |0, at this point the hint is no longer needed
-        node[1] = '|';
-        node[3] = node[3][2];
-        node[3][1] = 0;
+      } else if (type == 'binary') {
+        if (node[1] === '&') {
+          if (node[3][0] === 'unary-prefix' && node[3][1] === '-' && node[3][2][0] === 'num' && node[3][2][1] === 1) {
+            // Change &-1 into |0, at this point the hint is no longer needed
+            node[1] = '|';
+            node[3] = node[3][2];
+            node[3][1] = 0;
+          }
+        } else if (node[1] === '-' && node[3][0] === 'unary-prefix') {
+          // avoid X - (-Y) because some minifiers buggily emit X--Y which is invalid as -- can be a unary. Transform to
+         //        X + Y
+          if (node[3][1] === '-') { // integer
+            node[1] = '+';
+            node[3] = node[3][2];
+          } else if (node[3][1] === '+') { // float
+            if (node[3][2][0] === 'unary-prefix' && node[3][2][1] === '-') {
+              node[1] = '+';
+              node[3][2] = node[3][2][2];
+            }
+          }
+        }
       }
     });
   });
@@ -3467,9 +5225,10 @@ function asmLastOpts(ast) {
 
 // Passes table
 
-var minifyWhitespace = false, printMetadata = true, asm = false, last = false;
+var minifyWhitespace = false, printMetadata = true, asm = false, asmPreciseF32 = false, last = false;
 
 var passes = {
+  // passes
   dumpAst: dumpAst,
   dumpSrc: dumpSrc,
   unGlobalize: unGlobalize,
@@ -3481,14 +5240,22 @@ var passes = {
   hoistMultiples: hoistMultiples,
   loopOptimizer: loopOptimizer,
   registerize: registerize,
+  registerizeHarder: registerizeHarder,
   eliminate: eliminate,
   eliminateMemSafe: eliminateMemSafe,
+  aggressiveVariableElimination: aggressiveVariableElimination,
   minifyGlobals: minifyGlobals,
+  minifyLocals: minifyLocals,
   relocate: relocate,
   outline: outline,
+  safeHeap: safeHeap,
+  optimizeFrounds: optimizeFrounds,
+
+  // flags
   minifyWhitespace: function() { minifyWhitespace = true },
   noPrintMetadata: function() { printMetadata = false },
   asm: function() { asm = true },
+  asmPreciseF32: function() { asmPreciseF32 = true },
   last: function() { last = true },
 };
 
@@ -3507,8 +5274,8 @@ arguments_ = arguments_.filter(function (arg) {
 var src = read(arguments_[0]);
 var ast = srcToAst(src);
 //printErr(JSON.stringify(ast)); throw 1;
-generatedFunctions = src.indexOf(GENERATED_FUNCTIONS_MARKER) >= 0;
-var extraInfoStart = src.indexOf('// EXTRA_INFO:')
+generatedFunctions = src.lastIndexOf(GENERATED_FUNCTIONS_MARKER) >= 0;
+var extraInfoStart = src.lastIndexOf('// EXTRA_INFO:')
 if (extraInfoStart > 0) extraInfo = JSON.parse(src.substr(extraInfoStart + 14));
 //printErr(JSON.stringify(extraInfo));
 
