@@ -27,8 +27,6 @@ namespace emscripten {
     #endif
 
     namespace internal {
-        typedef void (*GenericFunction)();
-
         typedef const struct _TYPEID {}* TYPEID;
 
 
