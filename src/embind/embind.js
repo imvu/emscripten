@@ -779,7 +779,18 @@ function requireFunction(signature, rawFunction) {
         // - Function.prototype.bind generally benchmarks poorly relative to
         //   function objects, but using 'arguments' would confound JITs and
         //   possibly allocate.
-        fp = Module['dynCall_' + signature].bind(undefined, rawFunction);
+        var dc = asm['dynCall_' + signature];
+        if (dc === undefined) {
+            // We will always enter this branch if the signature
+            // contains 'f' and PRECISE_F32 is not enabled.
+            //
+            // Try again, replacing 'f' with 'd'.
+            dc = asm['dynCall_' + signature.replace(/f/g, 'd')];
+            if (dc === undefined) {
+                throwBindingError("No dynCall invoker for signature: " + signature);
+            }
+        }
+        fp = dc.bind(undefined, rawFunction);
     } else {
         fp = FUNCTION_TABLE[rawFunction];
     }
