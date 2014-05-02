@@ -411,6 +411,11 @@ namespace emscripten {
             return fromGenericWireType<T>(result);
         }
 
+        // private: TODO: use a friend?
+        internal::EM_VAL __get_handle() const {
+            return handle;
+        }
+
     private:
         // takes ownership, assumes handle already incref'd
         explicit val(internal::EM_VAL handle)
