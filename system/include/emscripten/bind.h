@@ -149,7 +149,8 @@ namespace emscripten {
                 TYPEID argTypes[],
                 const char* invokerSignature,
                 GenericFunction invoker,
-                void* context);
+                void* context,
+                unsigned isPureVirtual);
 
             void _embind_register_class_property(
                 TYPEID classType,
@@ -993,6 +994,33 @@ namespace emscripten {
         }
     };
 
+    struct pure_virtual {
+        template<typename InputType, int Index>
+        struct Transform {
+            typedef InputType type;
+        };
+    };
+
+    namespace internal {
+        template<typename... Policies>
+        struct isPureVirtual;
+
+        template<typename... Rest>
+        struct isPureVirtual<pure_virtual, Rest...> {
+            static constexpr bool value = true;
+        };
+
+        template<typename T, typename... Rest>
+        struct isPureVirtual<T, Rest...> {
+            static constexpr bool value = isPureVirtual<Rest...>::value;
+        };
+
+        template<>
+        struct isPureVirtual<> {
+            static constexpr bool value = false;
+        };
+    }
+
     template<typename ClassType, typename BaseSpecifier = internal::NoBaseClass>
     class class_ {
     public:
@@ -1135,7 +1163,8 @@ namespace emscripten {
                 args.types,
                 getSignature(invoker),
                 reinterpret_cast<GenericFunction>(invoker),
-                getContext(memberFunction));
+                getContext(memberFunction),
+                isPureVirtual<Policies...>::value);
             return *this;
         }
 
@@ -1153,7 +1182,8 @@ namespace emscripten {
                 args.types,
                 getSignature(invoker),
                 reinterpret_cast<GenericFunction>(invoker),
-                getContext(memberFunction));
+                getContext(memberFunction),
+                isPureVirtual<Policies...>::value);
             return *this;
         }
 
@@ -1170,7 +1200,8 @@ namespace emscripten {
                 args.types,
                 getSignature(invoke),
                 reinterpret_cast<GenericFunction>(invoke),
-                getContext(function));
+                getContext(function),
+                false);
             return *this;
         }
 
