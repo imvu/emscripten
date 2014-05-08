@@ -1124,7 +1124,6 @@ class ConcreteClass : public AbstractClass {
         return "from concrete";
     }
 
-
     void differentArguments(int i, double d, unsigned char f, double q, std::string s) {
     }
 
@@ -1154,6 +1153,31 @@ void callDifferentArguments(AbstractClass& ac, int i, double d, unsigned char f,
     return ac.differentArguments(i, d, f, q, s);
 }
 
+struct AbstractClassWithConstructor {
+    explicit AbstractClassWithConstructor(std::string s)
+        : s(s)
+    {}
+
+    virtual std::string abstractMethod() = 0;
+    std::string concreteMethod() {
+        return s;
+    }
+
+    std::string s;
+};
+
+struct AbstractClassWithConstructorWrapper : public wrapper<AbstractClassWithConstructor> {
+    EMSCRIPTEN_WRAPPER(AbstractClassWithConstructorWrapper);
+
+    virtual std::string abstractMethod() override {
+        return call<std::string>("abstractMethod");
+    }
+};
+
+std::string callAbstractMethod2(AbstractClassWithConstructor& ac) {
+    return ac.abstractMethod();
+}
+
 EMSCRIPTEN_BINDINGS(interface_tests) {
     class_<AbstractClass>("AbstractClass")
         .smart_ptr<std::shared_ptr<AbstractClass>>("shared_ptr<AbstractClass>")
@@ -1174,6 +1198,13 @@ EMSCRIPTEN_BINDINGS(interface_tests) {
     function("callOptionalMethod", &callOptionalMethod);
     function("callReturnsSharedPtrMethod", &callReturnsSharedPtrMethod);
     function("callDifferentArguments", &callDifferentArguments);
+
+    class_<AbstractClassWithConstructor>("AbstractClassWithConstructor")
+        .allow_subclass<AbstractClassWithConstructorWrapper>("AbstractClassWithConstructorWrapper", constructor<std::string>())
+        .function("abstractMethod", &AbstractClassWithConstructor::abstractMethod, pure_virtual())
+        .function("concreteMethod", &AbstractClassWithConstructor::concreteMethod)
+        ;
+    function("callAbstractMethod2", &callAbstractMethod2);
 }
 
 template<typename T, size_t sizeOfArray>
