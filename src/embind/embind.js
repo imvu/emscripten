@@ -156,7 +156,16 @@ function _embind_repr(v) {
 // raw pointer -> instance
 var registeredInstances = {};
 
-function registerInheritedInstance(ptr, instance) {
+function getBasestPointer(class_, ptr) {
+    while (class_.baseClass) {
+        ptr = class_.upcast(ptr);
+        class_ = class_.baseClass;
+    }
+    return ptr;
+}
+
+function registerInheritedInstance(class_, ptr, instance) {
+    ptr = getBasestPointer(class_, ptr);
     if (registeredInstances.hasOwnProperty(ptr)) {
         throwBindingError('Tried to register registered instance: ' + ptr);
     } else {
@@ -164,12 +173,18 @@ function registerInheritedInstance(ptr, instance) {
     }
 }
 
-function unregisterInheritedInstance(ptr) {
+function unregisterInheritedInstance(class_, ptr) {
+    ptr = getBasestPointer(class_, ptr);
     if (registeredInstances.hasOwnProperty(ptr)) {
         delete registeredInstances[ptr];
     } else {
         throwBindingError('Tried to unregister unregistered instance: ' + ptr);
     }
+}
+
+function getInheritedInstance(class_, ptr) {
+    ptr = getBasestPointer(class_, ptr);
+    return registeredInstances[ptr];
 }
 
 function getInheritedInstanceCount() {
@@ -1165,7 +1180,7 @@ RegisteredPointer.prototype['fromWireType'] = function fromWireType(ptr) {
         return null;
     }
 
-    var registeredInstance = registeredInstances[rawPointer];
+    var registeredInstance = getInheritedInstance(this.registeredClass, rawPointer);
     if (undefined !== registeredInstance) {
         var rv = registeredInstance['clone']();
         this.destructor(ptr);
@@ -1612,7 +1627,7 @@ function __embind_register_class_function(
         var humanName = classType.name + '.' + methodName;
 
         if (isPureVirtual) {
-            classType.registeredClass.pureVirtualFunctions.push(methodName)
+            classType.registeredClass.pureVirtualFunctions.push(methodName);
         }
 
         function unboundTypesHandler() {
@@ -1737,7 +1752,7 @@ function __embind_register_class_class_function(
 
         function unboundTypesHandler() {
             throwUnboundTypeError('Cannot call ' + humanName + ' due to unbound types', rawArgTypes);
-        };
+        }
 
         var proto = classType.registeredClass.constructor;
         if (undefined === proto[methodName]) {
@@ -1802,11 +1817,11 @@ function __embind_create_inheriting_constructor(constructorName, wrapperType, pr
         Object.defineProperty(this, '$$', {
             value: $$
         });
-        registerInheritedInstance($$.ptr, this);
+        registerInheritedInstance(registeredClass, $$.ptr, this);
     };
 
     wrapperPrototype.__destruct = function __destruct() {
-        unregisterInheritedInstance(this.$$.ptr);
+        unregisterInheritedInstance(registeredClass, this.$$.ptr);
     };
 
     ctor.prototype = Object.create(wrapperPrototype);
