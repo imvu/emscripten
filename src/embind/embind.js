@@ -153,6 +153,30 @@ function _embind_repr(v) {
     }
 }
 
+// raw pointer -> instance
+var registeredInstances = {};
+
+function registerInheritedInstance(ptr, instance) {
+    if (registeredInstances.hasOwnProperty(ptr)) {
+        throwBindingError('Tried to register registered instance: ' + ptr);
+    } else {
+        registeredInstances[ptr] = instance;
+    }
+}
+
+function unregisterInheritedInstance(ptr) {
+    if (registeredInstances.hasOwnProperty(ptr)) {
+        delete registeredInstances[ptr];
+    } else {
+        throwBindingError('Tried to unregister unregistered instance: ' + ptr);
+    }
+}
+
+function getInheritedInstanceCount() {
+    return Object.keys(registeredInstances).length;
+}
+Module['getInheritedInstanceCount'] = getInheritedInstanceCount;
+
 // typeID -> { toWireType: ..., fromWireType: ... }
 var registeredTypes = {};
 
@@ -1141,6 +1165,13 @@ RegisteredPointer.prototype['fromWireType'] = function fromWireType(ptr) {
         return null;
     }
 
+    var registeredInstance = registeredInstances[rawPointer];
+    if (undefined !== registeredInstance) {
+        var rv = registeredInstance['clone']();
+        this.destructor(ptr);
+        return rv;
+    }
+
     function makeDefaultHandle() {
         if (this.isSmartPointer) {
             return makeClassHandle(this.registeredClass.instancePrototype, {
@@ -1251,14 +1282,19 @@ ClassHandle.prototype['clone'] = function clone() {
         throwInstanceAlreadyDeleted(this);
     }
 
-    var clone = Object.create(Object.getPrototypeOf(this), {
-        $$: {
-            value: shallowCopy(this.$$),
-        }
-    });
+    if (this.$$.preservePointerOnDelete) {
+        this.$$.count.value += 1;
+        return this;
+    } else {
+        var clone = Object.create(Object.getPrototypeOf(this), {
+            $$: {
+                value: shallowCopy(this.$$),
+            }
+        });
 
-    clone.$$.count.value += 1;
-    return clone;
+        clone.$$.count.value += 1;
+        return clone;
+    }
 };
 
 function runDestructor(handle) {
@@ -1274,16 +1310,21 @@ ClassHandle.prototype['delete'] = function ClassHandle_delete() {
     if (!this.$$.ptr) {
         throwInstanceAlreadyDeleted(this);
     }
+
+    // TODO: test for multiple deleteLater() on JS instance handle
     if (this.$$.deleteScheduled) {
         throwBindingError('Object already scheduled for deletion');
     }
 
     this.$$.count.value -= 1;
-    if (0 === this.$$.count.value) {
+    var toDelete = 0 === this.$$.count.value;
+    if (toDelete) {
         runDestructor(this);
     }
-    this.$$.smartPtr = undefined;
-    this.$$.ptr = undefined;
+    if (toDelete || !this.$$.preservePointerOnDelete) {
+        this.$$.smartPtr = undefined;
+        this.$$.ptr = undefined;
+    }
 };
 
 var deletionQueue = [];
@@ -1348,7 +1389,9 @@ function RegisteredClass(
 function shallowCopy(o) {
     var rv = {};
     for (var k in o) {
-        rv[k] = o[k];
+        if (Object.prototype.hasOwnProperty.call(o, k)) {
+            rv[k] = o[k];
+        }
     }
     return rv;
 }
@@ -1750,16 +1793,21 @@ function __embind_create_inheriting_constructor(constructorName, wrapperType, pr
     });
 
     // It's a little nasty that we're modifying the wrapper prototype here.
+
     wrapperPrototype.__construct = function __construct() {
         var inner = baseConstructor.__$implement.apply(
             undefined,
             [this].concat(arraySlice.call(arguments)));
+        var $$ = inner.$$;
+        $$.preservePointerOnDelete = true;
         Object.defineProperty(this, '$$', {
-            value: inner.$$
+            value: $$
         });
+        registerInheritedInstance($$.ptr, this);
     };
 
     wrapperPrototype.__destruct = function __destruct() {
+        unregisterInheritedInstance(this.$$.ptr);
     };
 
     ctor.prototype = Object.create(wrapperPrototype);
