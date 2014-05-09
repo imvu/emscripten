@@ -1311,8 +1311,7 @@ ClassHandle.prototype['delete'] = function ClassHandle_delete() {
         throwInstanceAlreadyDeleted(this);
     }
 
-    // TODO: test for multiple deleteLater() on JS instance handle
-    if (this.$$.deleteScheduled) {
+    if (this.$$.deleteScheduled && !this.$$.preservePointerOnDelete) {
         throwBindingError('Object already scheduled for deletion');
     }
 
@@ -1337,7 +1336,7 @@ ClassHandle.prototype['deleteLater'] = function deleteLater() {
     if (!this.$$.ptr) {
         throwInstanceAlreadyDeleted(this);
     }
-    if (this.$$.deleteScheduled) {
+    if (this.$$.deleteScheduled && !this.$$.preservePointerOnDelete) {
         throwBindingError('Object already scheduled for deletion');
     }
     deletionQueue.push(this);
