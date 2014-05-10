@@ -1338,7 +1338,7 @@ ClassHandle.prototype['delete'] = function ClassHandle_delete() {
     if (toDelete) {
         runDestructor(this);
     }
-    if (toDelete || !this.$$.preservePointerOnDelete) {
+    if (!this.$$.preservePointerOnDelete) {
         this.$$.smartPtr = undefined;
         this.$$.ptr = undefined;
     }
