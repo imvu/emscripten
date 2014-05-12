@@ -1108,6 +1108,9 @@ public:
 
     std::string optionalMethod(std::string s) const {
         return call<std::string>("optionalMethod", s);
+        //return optional_call<std::string>(optionalMethod_symbol, [&] {
+        //    return AbstractClass::optionalMethod(s);
+        //}, s);
     }
 
     std::shared_ptr<Derived> returnsSharedPtr() {
