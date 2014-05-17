@@ -296,3 +296,8 @@ function __emval_has_function(handle, name, classType) {
     var filter = classType.registeredClass.instancePrototype[name];
     return (handle[name] instanceof Function) && (filter === undefined || handle[name] !== filter);
 }
+
+function __emval_typeof(handle) {
+    handle = requireHandle(handle);
+    return __emval_register(typeof handle);
+}

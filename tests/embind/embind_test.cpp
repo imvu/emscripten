@@ -2633,3 +2633,11 @@ EMSCRIPTEN_BINDINGS(intrusive_pointers) {
 
     function("passThroughIntrusiveClass", &passThrough<intrusive_ptr<IntrusiveClass>>);
 }
+
+std::string getTypeOfVal(const val& v) {
+    return v.typeof().as<std::string>();
+}
+
+EMSCRIPTEN_BINDINGS(typeof) {
+    function("getTypeOfVal", &getTypeOfVal);
+}

@@ -2412,6 +2412,16 @@ module({
             holder.delete();
         });
     });
+
+    BaseFixture.extend("typeof", function() {
+        test("typeof", function() {
+            assert.equal("object", cm.getTypeOfVal(null));
+            assert.equal("object", cm.getTypeOfVal({}));
+            assert.equal("function", cm.getTypeOfVal(function(){}));
+            assert.equal("number", cm.getTypeOfVal(1));
+            assert.equal("string", cm.getTypeOfVal("hi"));
+        });
+    });
 });
 
 /* global run_all_tests */

@@ -63,6 +63,7 @@ namespace emscripten {
                 EM_VAL value,
                 const char* methodName,
                 internal::TYPEID filter);
+            EM_VAL _emval_typeof(EM_VAL value);
         }
 
         template<const char* address> 
@@ -255,7 +256,6 @@ namespace emscripten {
         // * delete
         // * in
         // * instanceof
-        // * typeof
         // * ! ~ - + ++ --
         // * * / %
         // * + -
@@ -417,6 +417,10 @@ namespace emscripten {
         // private: TODO: use a friend?
         internal::EM_VAL __get_handle() const {
             return handle;
+        }
+
+        val typeof() const {
+            return val(_emval_typeof(handle));
         }
 
     private:
