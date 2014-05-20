@@ -274,6 +274,7 @@ def generate(env):
         RANLIBCOM='',
         CCFLAGS=[
             '-U__STRICT_ANSI__',
+            '-DNDEBUG',
             '-target', 'le32-unknown-nacl',
             '-nostdinc',
             '-Wno-#warnings',
