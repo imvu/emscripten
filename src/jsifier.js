@@ -337,8 +337,8 @@ function JSify(data, functionsOnly) {
     var js = (index !== null ? '' : item.ident + '=') + constant;
     if (js) js += ';';
 
-    if (!ASM_JS && NAMED_GLOBALS && (EXPORT_ALL || (item.ident in EXPORTED_GLOBALS))) {
-      js += '\nModule["' + item.ident + '"] = ' + item.ident + ';';
+    if (!ASM_JS && NAMED_GLOBALS && (EXPORT_ALL || (item.functionName in EXPORTED_GLOBALS))) {
+      js += '\nModule["' + item.functionName + '"] = ' + item.functionName + ';';
     }
     if (BUILD_AS_SHARED_LIB == 2 && !item.private_) {
       // TODO: make the assert conditional on ASSERTIONS
@@ -396,9 +396,16 @@ function JSify(data, functionsOnly) {
       // dependencies can be JS functions, which we just run
       if (typeof ident == 'function') return ident();
 
+      // $ident's are special, we do not prefix them with a '_'.
+      if (ident[0] === '$') {
+        var functionName = ident.substr(1);
+      } else {
+        var functionName = '_' + ident;
+      }
+
       // Don't replace implemented functions with library ones (which can happen when we add dependencies).
       // Note: We don't return the dependencies here. Be careful not to end up where this matters
-      if (('_' + ident) in Functions.implementedFunctions) return '';
+      if (functionName in Functions.implementedFunctions) return '';
 
       if (!LibraryManager.library.hasOwnProperty(ident) && !LibraryManager.library.hasOwnProperty(ident + '__inline')) {
         if (notDep) {
@@ -418,13 +425,6 @@ function JSify(data, functionsOnly) {
         if (typeof snippet === 'string' && !(dep in LibraryManager.library)) warn('missing library dependency ' + dep + ', make sure you are compiling with the right options (see #ifdefs in src/library*.js)');
       });
       var isFunction = false;
-
-      // $ident's are special, we do not prefix them with a '_'.
-      if (ident[0] === '$') {
-        var functionName = ident.substr(1);
-      } else {
-        var functionName = '_' + ident;
-      }
 
       if (typeof snippet === 'string') {
         var target = LibraryManager.library[snippet];
