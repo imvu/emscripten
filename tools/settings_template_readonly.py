@@ -5,18 +5,20 @@
 import os
 
 # this helps projects using emscripten find it
-EMSCRIPTEN_ROOT = os.path.expanduser(os.getenv('EMSCRIPTEN') or '{{{ EMSCRIPTEN_ROOT }}}')
-LLVM_ROOT = os.path.expanduser(os.getenv('LLVM') or '{{{ LLVM_ROOT }}}')
+EMSCRIPTEN_ROOT = os.path.expanduser(os.getenv('EMSCRIPTEN') or '{{{ EMSCRIPTEN_ROOT }}}') # directory
+LLVM_ROOT = os.path.expanduser(os.getenv('LLVM') or '{{{ LLVM_ROOT }}}') # directory
+PYTHON = os.path.expanduser(os.getenv('PYTHON') or '{{{ PYTHON }}}') # executable
 
 # See below for notes on which JS engine(s) you need
-NODE_JS = '{{{ NODE }}}'
-SPIDERMONKEY_ENGINE = [
-  os.path.expanduser(os.getenv('SPIDERMONKEY') or 'js'), '-m', '-n']
-V8_ENGINE = os.path.expanduser(os.getenv('V8') or 'd8')
+NODE_JS = os.path.expanduser(os.getenv('NODE') or '{{{ NODE }}}') # executable
+SPIDERMONKEY_ENGINE = [os.path.expanduser(os.getenv('SPIDERMONKEY') or 'js')] # executable
+V8_ENGINE = os.path.expanduser(os.getenv('V8') or 'd8') # executable
 
-JAVA = 'java'
+JAVA = 'java' # executable
 
-TEMP_DIR = '/tmp' # You will need to modify this on Windows
+TEMP_DIR = '{{{ TEMP }}}'
+
+CRUNCH = os.path.expanduser(os.getenv('CRUNCH') or 'crunch') # executable
 
 #CLOSURE_COMPILER = '..' # define this to not use the bundled version
 
@@ -43,5 +45,5 @@ COMPILER_ENGINE = NODE_JS
 #                 run all the tests due to node issue 1669). v8 is currently not recommended
 #                 here because of v8 issue 1822.
 
-JS_ENGINES = [NODE_JS, SPIDERMONKEY_ENGINE]
+JS_ENGINES = [NODE_JS] # add this if you have spidermonkey installed too, SPIDERMONKEY_ENGINE]
 

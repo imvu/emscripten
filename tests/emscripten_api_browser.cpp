@@ -31,6 +31,18 @@ void five(void *arg) {
   emscripten_resume_main_loop();
 }
 
+void argey(void* arg) {
+  static int counter = 0;
+  assert((int)arg == 17);
+  counter++;
+  printf("argey: %d\n", counter);
+  if (counter == 5) {
+    emscripten_cancel_main_loop();
+    int result = 1;
+    REPORT_RESULT();
+  }
+}
+
 void mainey() {
   static int counter = 0;
   printf("mainey: %d\n", counter++);
@@ -45,15 +57,15 @@ void mainey() {
     assert(pre1ed);
     assert(pre2ed);
     printf("Good!\n");
-    int result = 1;
-    REPORT_RESULT();
+    emscripten_cancel_main_loop();
+    emscripten_set_main_loop_arg(argey, (void*)17, 0, 0);
   }
 }
 
 void four(void *arg) {
   assert((int)arg == 43);
   printf("four!\n");
-  emscripten_set_main_loop(mainey, 0);
+  emscripten_set_main_loop(mainey, 0, 0);
 }
 
 void __attribute__((used)) third() {
@@ -68,7 +80,7 @@ void second(void *arg) {
   printf("sacond! %d\n", now);
   assert(fabs(now - last - 500) < 250);
   last = now;
-  emscripten_async_run_script("_third()", 1000);
+  emscripten_async_run_script("Module._third()", 1000);
 }
 
 }

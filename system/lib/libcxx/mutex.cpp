@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#define _LIBCPP_BUILDING_MUTEX
 #include "mutex"
 #include "limits"
 #include "system_error"
@@ -20,8 +21,7 @@ const adopt_lock_t  adopt_lock = {};
 
 mutex::~mutex()
 {
-    int e = pthread_mutex_destroy(&__m_);
-//     assert(e == 0);
+    pthread_mutex_destroy(&__m_);
 }
 
 void
@@ -33,15 +33,16 @@ mutex::lock()
 }
 
 bool
-mutex::try_lock()
+mutex::try_lock() _NOEXCEPT
 {
     return pthread_mutex_trylock(&__m_) == 0;
 }
 
 void
-mutex::unlock()
+mutex::unlock() _NOEXCEPT
 {
     int ec = pthread_mutex_unlock(&__m_);
+    (void)ec;
     assert(ec == 0);
 }
 
@@ -79,6 +80,7 @@ fail:
 recursive_mutex::~recursive_mutex()
 {
     int e = pthread_mutex_destroy(&__m_);
+    (void)e;
     assert(e == 0);
 }
 
@@ -91,14 +93,15 @@ recursive_mutex::lock()
 }
 
 void
-recursive_mutex::unlock()
+recursive_mutex::unlock() _NOEXCEPT
 {
     int e = pthread_mutex_unlock(&__m_);
+    (void)e;
     assert(e == 0);
 }
 
 bool
-recursive_mutex::try_lock()
+recursive_mutex::try_lock() _NOEXCEPT
 {
     return pthread_mutex_trylock(&__m_) == 0;
 }
@@ -125,7 +128,7 @@ timed_mutex::lock()
 }
 
 bool
-timed_mutex::try_lock()
+timed_mutex::try_lock() _NOEXCEPT
 {
     unique_lock<mutex> lk(__m_, try_to_lock);
     if (lk.owns_lock() && !__locked_)
@@ -137,7 +140,7 @@ timed_mutex::try_lock()
 }
 
 void
-timed_mutex::unlock()
+timed_mutex::unlock() _NOEXCEPT
 {
     lock_guard<mutex> _(__m_);
     __locked_ = false;
@@ -176,7 +179,7 @@ recursive_timed_mutex::lock()
 }
 
 bool
-recursive_timed_mutex::try_lock()
+recursive_timed_mutex::try_lock() _NOEXCEPT
 {
     pthread_t id = pthread_self();
     unique_lock<mutex> lk(__m_, try_to_lock);
@@ -192,7 +195,7 @@ recursive_timed_mutex::try_lock()
 }
 
 void
-recursive_timed_mutex::unlock()
+recursive_timed_mutex::unlock() _NOEXCEPT
 {
     unique_lock<mutex> lk(__m_);
     if (--__count_ == 0)

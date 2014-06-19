@@ -11,6 +11,9 @@
 //  
 //===----------------------------------------------------------------------===//
 
+#ifndef _CXA_EXCEPTION_H
+#define _CXA_EXCEPTION_H
+
 #include <exception> // for std::unexpected_handler and std::terminate_handler
 #include <cxxabi.h>
 #include "unwind.h"
@@ -38,19 +41,19 @@ static const uint64_t get_vendor_and_language =     0xFFFFFFFFFFFFFF00; // mask 
         std::unexpected_handler unexpectedHandler;
         std::terminate_handler  terminateHandler;
         
-         __cxa_exception *nextException;
+        __cxa_exception *nextException;
         
-         int handlerCount;
+        int handlerCount;
     
 #ifdef __ARM_EABI_UNWINDER__
-         __cxa_exception* nextPropagatingException;
-         int propagationCount;
+        __cxa_exception* nextPropagatingException;
+        int propagationCount;
 #else
-         int handlerSwitchValue;
-         const unsigned char *actionRecord;
-         const unsigned char *languageSpecificData;
-         void *catchTemp;
-         void *adjustedPtr;
+        int handlerSwitchValue;
+        const unsigned char *actionRecord;
+        const unsigned char *languageSpecificData;
+        void *catchTemp;
+        void *adjustedPtr;
 #endif
 
 #if !__LP64__
@@ -116,3 +119,5 @@ static const uint64_t get_vendor_and_language =     0xFFFFFFFFFFFFFF00; // mask 
 
 #pragma GCC visibility pop
 }
+
+#endif  // _CXA_EXCEPTION_H

@@ -10,6 +10,10 @@ function safeQuote(x) {
 
 function dump(item) {
   try {
+    if (typeof item == 'object' && item !== null && item.funcData) {
+      var funcData = item.funcData;
+      item.funcData = null;
+    }
     return '// ' + JSON.stringify(item, null, '  ').replace(/\n/g, '\n// ');
   } catch(e) {
     var ret = [];
@@ -22,6 +26,8 @@ function dump(item) {
       }
     }
     return ret.join(',\n');
+  } finally {
+    if (funcData) item.funcData = funcData;
   }
 }
 
@@ -62,7 +68,7 @@ function warn(a, msg) {
     a = false;
   }
   if (!a) {
-    printErr('Warning: ' + msg);
+    printErr('warning: ' + msg);
   }
 }
 
@@ -75,8 +81,15 @@ function warnOnce(a, msg) {
     if (!warnOnce.msgs) warnOnce.msgs = {};
     if (msg in warnOnce.msgs) return;
     warnOnce.msgs[msg] = true;
-    printErr('Warning: ' + msg);
+    printErr('warning: ' + msg);
   }
+}
+
+var abortExecution = false;
+
+function error(msg) {
+  abortExecution = true;
+  printErr('error: ' + msg);
 }
 
 function dedup(items, ident) {
@@ -105,6 +118,12 @@ function range(size) {
 function zeros(size) {
   var ret = [];
   for (var i = 0; i < size; i++) ret.push(0);
+  return ret;
+}
+
+function spaces(size) {
+  var ret = '';
+  for (var i = 0; i < size; i++) ret += ' ';
   return ret;
 }
 
@@ -178,14 +197,14 @@ function dprint() {
     text = text(); // Allows deferred calculation, so dprints don't slow us down when not needed
   }
   text = DPRINT_INDENT + '// ' + text;
-  print(text);
+  printErr(text);
 }
 
-var PROF_ORIGIN = Date.now();
-var PROF_TIME = PROF_ORIGIN;
+var _PROF_ORIGIN = Date.now();
+var _PROF_TIME = _PROF_ORIGIN;
 function PROF(pass) {
   if (!pass) {
-    dprint("Profiling: " + ((Date.now() - PROF_TIME)/1000) + ' seconds, total: ' + ((Date.now() - PROF_ORIGIN)/1000));
+    dprint("Profiling: " + ((Date.now() - _PROF_TIME)/1000) + ' seconds, total: ' + ((Date.now() - _PROF_ORIGIN)/1000));
   }
   PROF_TIME = Date.now();
 }
@@ -203,7 +222,8 @@ function mergeInto(obj, other) {
 }
 
 function isNumber(x) {
-  return x == parseFloat(x) || (typeof x == 'string' && x.match(/^-?\d+$/));
+  // XXX this does not handle 0xabc123 etc. We should likely also do x == parseInt(x) (which handles that), and remove hack |// handle 0x... as well|
+  return x == parseFloat(x) || (typeof x == 'string' && x.match(/^-?\d+$/)) || x === 'NaN';
 }
 
 function isArray(x) {
@@ -255,6 +275,15 @@ function set() {
 }
 var unset = keys;
 
+function numberedSet() {
+  var args = typeof arguments[0] === 'object' ? arguments[0] : arguments;
+  var ret = {};
+  for (var i = 0; i < args.length; i++) {
+    ret[args[i]] = i;
+  }
+  return ret;
+}
+
 function setSub(x, y) {
   var ret = set(keys(x));
   for (yy in y) {
@@ -270,8 +299,30 @@ function setIntersect(x, y) {
   var ret = {};
   for (xx in x) {
     if (xx in y) {
-      ret[xx] = true;
+      ret[xx] = 0;
     }
+  }
+  return ret;
+}
+
+function setUnion(x, y) {
+  var ret = set(keys(x));
+  for (yy in y) {
+    ret[yy] = 0;
+  }
+  return ret;
+}
+
+function setSize(x) {
+  var ret = 0;
+  for (var xx in x) ret++;
+  return ret;
+}
+
+function invertArray(x) {
+  var ret = {};
+  for (var i = 0; i < x.length; i++) {
+    ret[x[i]] = i;
   }
   return ret;
 }
@@ -284,13 +335,30 @@ function jsonCompare(x, y) {
   return JSON.stringify(x) == JSON.stringify(y);
 }
 
+function sortedJsonCompare(x, y) {
+  if (x === null || typeof x !== 'object') return x === y;
+  for (var i in x) {
+    if (!sortedJsonCompare(x[i], y[i])) return false;
+  }
+  for (var i in y) {
+    if (!sortedJsonCompare(x[i], y[i])) return false;
+  }
+  return true;
+}
+
+function escapeJSONKey(x) {
+  if (/^[\d\w_]+$/.exec(x) || x[0] === '"' || x[0] === "'") return x;
+  assert(x.indexOf("'") < 0, 'cannot have internal single quotes in keys: ' + x);
+  return "'" + x + "'";
+}
+
 function stringifyWithFunctions(obj) {
   if (typeof obj === 'function') return obj.toString();
   if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
   if (isArray(obj)) {
     return '[' + obj.map(stringifyWithFunctions).join(',') + ']';
   } else {
-    return '{' + keys(obj).map(function(key) { return key + ':' + stringifyWithFunctions(obj[key]) }).join(',') + '}';
+    return '{' + keys(obj).map(function(key) { return escapeJSONKey(key) + ':' + stringifyWithFunctions(obj[key]) }).join(',') + '}';
   }
 }
 
@@ -307,22 +375,37 @@ function isPowerOfTwo(x) {
   return x > 0 && ((x & (x-1)) == 0);
 }
 
+function ceilPowerOfTwo(x) {
+  var ret = 1;
+  while (ret < x) ret <<= 1;
+  return ret;
+}
+
 function Benchmarker() {
-  var starts = {}, times = {}, counts = {};
+  var totals = {};
+  var ids = [], lastTime = 0;
   this.start = function(id) {
-    //printErr(['+', id, starts[id]]);
-    starts[id] = (starts[id] || []).concat([Date.now()]);
+    var now = Date.now();
+    if (ids.length > 0) {
+      totals[ids[ids.length-1]] += now - lastTime;
+    }
+    lastTime = now;
+    ids.push(id);
+    totals[id] = totals[id] || 0;
   };
-  this.end = function(id) {
-    //printErr(['-', id, starts[id]]);
-    assert(starts[id], new Error().stack);
-    times[id] = (times[id] || 0) + Date.now() - starts[id].pop();
-    counts[id] = (counts[id] || 0) + 1;
+  this.stop = function(id) {
+    var now = Date.now();
+    assert(id === ids[ids.length-1]);
+    totals[id] += now - lastTime;
+    lastTime = now;
+    ids.pop();
   };
-  this.print = function() {
-    var ids = keys(times);
-    ids.sort(function(a, b) { return times[b] - times[a] });
-    printErr('times: \n' + ids.map(function(id) { return id + ' : ' + counts[id] + ' times, ' + times[id] + ' ms' }).join('\n'));
+  this.print = function(text) {
+    var ids = keys(totals);
+    if (ids.length > 0) {
+      ids.sort(function(a, b) { return totals[b] - totals[a] });
+      printErr(text + ' times: \n' + ids.map(function(id) { return id + ' : ' + totals[id] + ' ms' }).join('\n'));
+    }
   };
 };
 

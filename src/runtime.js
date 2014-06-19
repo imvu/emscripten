@@ -13,9 +13,9 @@ var RuntimeGenerator = {
     if (init) {
       ret += sep + '_memset(' + type + 'TOP, 0, ' + size + ')';
     }
-    ret += sep + type + 'TOP += ' + size;
-    if ({{{ QUANTUM_SIZE }}} > 1 && !ignoreAlign) {
-      ret += sep + RuntimeGenerator.alignMemory(type + 'TOP', {{{ QUANTUM_SIZE }}});
+    ret += sep + type + 'TOP = (' + type + 'TOP + ' + size + ')|0';
+    if ({{{ STACK_ALIGN }}} > 1 && !ignoreAlign) {
+      ret += sep + RuntimeGenerator.alignMemory(type + 'TOP', {{{ STACK_ALIGN }}});
     }
     return ret;
   },
@@ -23,30 +23,25 @@ var RuntimeGenerator = {
   // An allocation that lives as long as the current function call
   stackAlloc: function(size, sep) {
     sep = sep || ';';
-    if (USE_TYPED_ARRAYS === 2) 'STACKTOP += STACKTOP % ' + ({{{ QUANTUM_SIZE }}} - (isNumber(size) ? Math.min(size, {{{ QUANTUM_SIZE }}}) : {{{ QUANTUM_SIZE }}})) + sep;
-    //                                                               The stack is always QUANTUM SIZE aligned, so we may not need to force alignment here
-    var ret = RuntimeGenerator.alloc(size, 'STACK', INIT_STACK, sep, USE_TYPED_ARRAYS != 2 || (isNumber(size) && parseInt(size) % {{{ QUANTUM_SIZE }}} == 0));
+    var ret = RuntimeGenerator.alloc(size, 'STACK', false, sep, USE_TYPED_ARRAYS != 2 || (isNumber(size) && parseInt(size) % {{{ STACK_ALIGN }}} == 0));
     if (ASSERTIONS) {
-      ret += sep + 'assert(STACKTOP < STACK_ROOT + STACK_MAX, "Ran out of stack")';
+      ret += sep + '(assert(' + asmCoercion('(STACKTOP|0) < (STACK_MAX|0)', 'i32') + ')|0)';
     }
     return ret;
   },
 
   stackEnter: function(initial, force) {
     if (initial === 0 && SKIP_STACK_IN_SMALL && !force) return '';
-    var ret = 'var __stackBase__  = STACKTOP';
-    if (initial > 0) ret += '; STACKTOP += ' + initial;
+    var ret = 'var sp=' + (ASM_JS ? '0;sp=' : '') + 'STACKTOP';
+    if (initial > 0) ret += ';STACKTOP=(STACKTOP+' + initial + ')|0';
     if (USE_TYPED_ARRAYS == 2) {
-      assert(initial % QUANTUM_SIZE == 0);
-      if (ASSERTIONS) {
-        ret += '; assert(STACKTOP % {{{ QUANTUM_SIZE }}} == 0, "Stack is unaligned")';
+      assert(initial % Runtime.STACK_ALIGN == 0);
+      if (ASSERTIONS && Runtime.STACK_ALIGN == 4) {
+        ret += '; (assert(' + asmCoercion('!(STACKTOP&3)', 'i32') + ')|0)';
       }
     }
     if (ASSERTIONS) {
-      ret += '; assert(STACKTOP < STACK_MAX, "Ran out of stack")';
-    }
-    if (INIT_STACK) {
-      ret += '; _memset(__stackBase__, 0, ' + initial + ')';
+      ret += '; (assert(' + asmCoercion('(STACKTOP|0) < (STACK_MAX|0)', 'i32') + ')|0)';
     }
     return ret;
   },
@@ -54,23 +49,31 @@ var RuntimeGenerator = {
   stackExit: function(initial, force) {
     if (initial === 0 && SKIP_STACK_IN_SMALL && !force) return '';
     var ret = '';
-    if (SAFE_HEAP) {
-      ret += 'for (var i = __stackBase__; i < STACKTOP; i++) SAFE_HEAP_CLEAR(i);';
+    if (SAFE_HEAP && !ASM_JS) {
+      ret += 'var i = sp; while ((i|0) < (STACKTOP|0)) { SAFE_HEAP_CLEAR(i|0); i = (i+1)|0 }';
     }
-    return ret += 'STACKTOP = __stackBase__';
+    return ret += 'STACKTOP=sp';
   },
 
   // An allocation that cannot normally be free'd (except through sbrk, which once
   // called, takes control of STATICTOP)
   staticAlloc: function(size) {
+    if (ASSERTIONS) size = '(assert(!staticSealed),' + size + ')'; // static area must not be sealed
     var ret = RuntimeGenerator.alloc(size, 'STATIC', INIT_HEAP);
-    if (USE_TYPED_ARRAYS) ret += '; if (STATICTOP >= TOTAL_MEMORY) enlargeMemory();'
+    return ret;
+  },
+
+  // allocation on the top of memory, adjusted dynamically by sbrk
+  dynamicAlloc: function(size) {
+    if (ASSERTIONS) size = '(assert(DYNAMICTOP > 0),' + size + ')'; // dynamic area must be ready
+    var ret = RuntimeGenerator.alloc(size, 'DYNAMIC', INIT_HEAP);
+    if (USE_TYPED_ARRAYS) ret += '; if (DYNAMICTOP >= TOTAL_MEMORY) enlargeMemory();'
     return ret;
   },
 
   alignMemory: function(target, quantum) {
     if (typeof quantum !== 'number') {
-      quantum = '(quantum ? quantum : {{{ QUANTUM_SIZE }}})';
+      quantum = '(quantum ? quantum : {{{ STACK_ALIGN }}})';
     }
     return target + ' = ' + Runtime.forceAlign(target, quantum);
   },
@@ -79,20 +82,29 @@ var RuntimeGenerator = {
   // Rounding is inevitable if the number is large. This is a particular problem for small negative numbers
   // (-1 will be rounded!), so handle negatives separately and carefully
   makeBigInt: function(low, high, unsigned) {
-    var unsignedRet = '(' + makeSignOp(low, 'i32', 'un', 1, 1) + '+(' + makeSignOp(high, 'i32', 'un', 1, 1) + '*4294967296))';
-    var signedRet = '(' + makeSignOp(low, 'i32', 'un', 1, 1) + '+(' + makeSignOp(high, 'i32', 're', 1, 1) + '*4294967296))';
+    var unsignedRet = '(' + asmCoercion(makeSignOp(low, 'i32', 'un', 1, 1), 'double') + '+(' + asmCoercion(makeSignOp(high, 'i32', 'un', 1, 1), 'double') + '*' + asmEnsureFloat(4294967296, 'double') + '))';
+    var signedRet = '(' + asmCoercion(makeSignOp(low, 'i32', 'un', 1, 1), 'double') + '+(' + asmCoercion(makeSignOp(high, 'i32', 're', 1, 1), 'double') + '*' + asmEnsureFloat(4294967296, 'double') + '))';
     if (typeof unsigned === 'string') return '(' + unsigned + ' ? ' + unsignedRet + ' : ' + signedRet + ')';
     return unsigned ? unsignedRet : signedRet;
   }
 };
 
 function unInline(name_, params) {
-  var src = '(function ' + name_ + '(' + params + ') { var ret = ' + RuntimeGenerator[name_].apply(null, params) + '; return ret; })';
+  var src = '(function(' + params + ') { var ret = ' + RuntimeGenerator[name_].apply(null, params) + '; return ret; })';
   var ret = eval(src);
   return ret;
 }
 
 var Runtime = {
+  // When a 64 bit long is returned from a compiled function the least significant
+  // 32 bit word is passed in the return value, but the most significant 32 bit
+  // word is placed in tempRet0. This provides an accessor for that value.
+  setTempRet0: function(value) {
+    tempRet0 = value;
+  },
+  getTempRet0: function() {
+    return tempRet0;
+  },
   stackSave: function() {
     return STACKTOP;
   },
@@ -106,8 +118,7 @@ var Runtime = {
     if (isNumber(target) && isNumber(quantum)) {
       return Math.ceil(target/quantum)*quantum;
     } else if (isNumber(quantum) && isPowerOfTwo(quantum)) {
-      var logg = log2(quantum);
-      return '((((' +target + ')+' + (quantum-1) + ')>>' + logg + ')<<' + logg + ')';
+      return '(((' +target + ')+' + (quantum-1) + ')&' + -quantum + ')';
     }
     return 'Math.ceil((' + target + ')/' + quantum + ')*' + quantum;
   },
@@ -121,40 +132,6 @@ var Runtime = {
 
   INT_TYPES: set('i1', 'i8', 'i16', 'i32', 'i64'),
   FLOAT_TYPES: set('float', 'double'),
-
-  // Mirrors processMathop's treatment of constants (which we optimize directly)
-  bitshift64: function(low, high, op, bits) {
-    var ander = Math.pow(2, bits)-1;
-    if (bits < 32) {
-      switch (op) {
-        case 'shl':
-          return [low << bits, (high << bits) | ((low&(ander << (32 - bits))) >>> (32 - bits))];
-        case 'ashr':
-          return [(((low >>> bits ) | ((high&ander) << (32 - bits))) >> 0) >>> 0, (high >> bits) >>> 0];
-        case 'lshr':
-          return [((low >>> bits) | ((high&ander) << (32 - bits))) >>> 0, high >>> bits];
-      }
-    } else if (bits == 32) {
-      switch (op) {
-        case 'shl':
-          return [0, low];
-        case 'ashr':
-          return [high, (high|0) < 0 ? ander : 0];
-        case 'lshr':
-          return [high, 0];
-      }
-    } else { // bits > 32
-      switch (op) {
-        case 'shl':
-          return [0, low << (bits - 32)];
-        case 'ashr':
-          return [(high >> (bits - 32)) >>> 0, (high|0) < 0 ? ander : 0];
-        case 'lshr':
-          return [high >>>  (bits - 32) , 0];
-      }
-    }
-    abort('unknown bitshift64 op: ' + [value, op, bits]);
-  },
 
   // Imprecise bitops utilities
   or64: function(x, y) {
@@ -173,29 +150,32 @@ var Runtime = {
     return l + h;
   },
 
-  //! Returns the size of a type, as C/C++ would have it (in 32-bit, for now), in bytes.
+  //! Returns the size of a type, as C/C++ would have it (in 32-bit), in bytes.
   //! @param type The type, by name.
-  getNativeTypeSize: function(type, quantumSize) {
-    if (Runtime.QUANTUM_SIZE == 1) return 1;
-    var size = {
-      '%i1': 1,
-      '%i8': 1,
-      '%i16': 2,
-      '%i32': 4,
-      '%i64': 8,
-      "%float": 4,
-      "%double": 8
-    }['%'+type]; // add '%' since float and double confuse Closure compiler as keys, and also spidermonkey as a compiler will remove 's from '_i8' etc
-    if (!size) {
-      if (type[type.length-1] == '*') {
-        size = Runtime.QUANTUM_SIZE; // A pointer
-      } else if (type[0] == 'i') {
-        var bits = parseInt(type.substr(1));
-        assert(bits % 8 == 0);
-        size = bits/8;
+  getNativeTypeSize: function(type) {
+#if QUANTUM_SIZE == 1
+    return 1;
+#else
+    switch (type) {
+      case 'i1': case 'i8': return 1;
+      case 'i16': return 2;
+      case 'i32': return 4;
+      case 'i64': return 8;
+      case 'float': return 4;
+      case 'double': return 8;
+      default: {
+        if (type[type.length-1] === '*') {
+          return Runtime.QUANTUM_SIZE; // A pointer
+        } else if (type[0] === 'i') {
+          var bits = parseInt(type.substr(1));
+          assert(bits % 8 === 0);
+          return bits/8;
+        } else {
+          return 0;
+        }
       }
     }
-    return size;
+#endif
   },
 
   //! Returns the size of a structure field, as C/C++ would have it (in 32-bit,
@@ -209,6 +189,21 @@ var Runtime = {
 
   set: set,
 
+  STACK_ALIGN: {{{ STACK_ALIGN }}},
+
+  // type can be a native type or a struct (or null, for structs we only look at size here)
+  getAlignSize: function(type, size, vararg) {
+    // we align i64s and doubles on 64-bit boundaries, unlike x86
+#if TARGET_ASMJS_UNKNOWN_EMSCRIPTEN == 1
+    if (vararg) return 8;
+#endif
+#if TARGET_ASMJS_UNKNOWN_EMSCRIPTEN
+    if (!vararg && (type == 'i64' || type == 'double')) return 8;
+    if (!type) return Math.min(size, 8); // align structures internally to 64 bits
+#endif
+    return Math.min(size || (type ? Runtime.getNativeFieldSize(type) : 0), Runtime.QUANTUM_SIZE);
+  },
+
   // Calculate aligned size, just like C structs should be. TODO: Consider
   // requesting that compilation be done with #pragma pack(push) /n #pragma pack(1),
   // which would remove much of the complexity here.
@@ -217,18 +212,44 @@ var Runtime = {
     type.alignSize = 0;
     var diffs = [];
     var prev = -1;
+    var index = 0;
     type.flatIndexes = type.fields.map(function(field) {
+      index++;
       var size, alignSize;
       if (Runtime.isNumberType(field) || Runtime.isPointerType(field)) {
         size = Runtime.getNativeTypeSize(field); // pack char; char; in structs, also char[X]s.
-        alignSize = size;
+        alignSize = Runtime.getAlignSize(field, size);
       } else if (Runtime.isStructType(field)) {
-        size = Types.types[field].flatSize;
-        alignSize = Types.types[field].alignSize;
+        if (field[1] === '0') {
+          // this is [0 x something]. When inside another structure like here, it must be at the end,
+          // and it adds no size
+          // XXX this happens in java-nbody for example... assert(index === type.fields.length, 'zero-length in the middle!');
+          size = 0;
+          if (Types.types[field]) {
+            alignSize = Runtime.getAlignSize(null, Types.types[field].alignSize);
+          } else {
+            alignSize = type.alignSize || QUANTUM_SIZE;
+          }
+        } else {
+          size = Types.types[field].flatSize;
+          alignSize = Runtime.getAlignSize(null, Types.types[field].alignSize);
+        }
+      } else if (field[0] == 'b') {
+        // bN, large number field, like a [N x i8]
+        size = field.substr(1)|0;
+        alignSize = 1;
+      } else if (field[0] === '<') {
+        // vector type
+        size = alignSize = Types.types[field].flatSize; // fully aligned
+      } else if (field[0] === 'i') {
+        // illegal integer field, that could not be legalized because it is an internal structure field
+        // it is ok to have such fields, if we just use them as markers of field size and nothing more complex
+        size = alignSize = parseInt(field.substr(1))/8;
+        assert(size % 1 === 0, 'cannot handle non-byte-size field ' + field);
       } else {
-        throw 'Unclear type in struct: ' + field + ', in ' + type.name_ + ' :: ' + dump(Types.types[type.name_]);
+        assert(false, 'invalid type for calculateStructAlignment');
       }
-      alignSize = type.packed ? 1 : Math.min(alignSize, Runtime.QUANTUM_SIZE);
+      if (type.packed) alignSize = 1;
       type.alignSize = Math.max(type.alignSize, alignSize);
       var curr = Runtime.alignMemory(type.flatSize, alignSize); // if necessary, place this on aligned memory
       type.flatSize = curr + size;
@@ -238,6 +259,11 @@ var Runtime = {
       prev = curr;
       return curr;
     });
+    if (type.name_ && type.name_[0] === '[') {
+      // arrays have 2 elements, so we get the proper difference. then we scale here. that way we avoid
+      // allocating a potentially huge array for [999999 x i8] etc.
+      type.flatSize = parseInt(type.name_.substr(1))*type.flatSize/2;
+    }
     type.flatSize = Runtime.alignMemory(type.flatSize, type.alignSize);
     if (diffs.length == 0) {
       type.flatFactor = type.flatSize;
@@ -273,7 +299,7 @@ var Runtime = {
   //
   // When providing a typeName, you can generate information for nested
   // structs, for example, struct = ['field1', { field2: ['sub1', 'sub2', 'sub3'] }, 'field3']
-  // which repesents a structure whose 2nd field is another structure.
+  // which represents a structure whose 2nd field is another structure.
   generateStructInfo: function(struct, typeName, offset) {
     var type, alignment;
     if (typeName) {
@@ -311,11 +337,98 @@ var Runtime = {
     return ret;
   },
 
+  dynCall: function(sig, ptr, args) {
+    if (args && args.length) {
+#if ASSERTIONS
+      assert(args.length == sig.length-1);
+#endif
+#if ASM_JS
+      if (!args.splice) args = Array.prototype.slice.call(args);
+      args.splice(0, 0, ptr);
+#if ASSERTIONS
+      assert(('dynCall_' + sig) in Module, 'bad function pointer type - no table for sig \'' + sig + '\'');
+#endif
+      return Module['dynCall_' + sig].apply(null, args);
+#else
+      return FUNCTION_TABLE[ptr].apply(null, args);
+#endif
+    } else {
+#if ASSERTIONS
+      assert(sig.length == 1);
+#endif
+#if ASM_JS
+#if ASSERTIONS
+      assert(('dynCall_' + sig) in Module, 'bad function pointer type - no table for sig \'' + sig + '\'');
+#endif
+      return Module['dynCall_' + sig].call(null, ptr);
+#else
+      return FUNCTION_TABLE[ptr]();
+#endif
+    }
+  },
+
+#if ASM_JS
+  functionPointers: new Array(RESERVED_FUNCTION_POINTERS),
+#endif
+
   addFunction: function(func) {
-    var ret = FUNCTION_TABLE.length;
-    FUNCTION_TABLE.push(func);
-    FUNCTION_TABLE.push(0);
+#if ASM_JS
+    for (var i = 0; i < Runtime.functionPointers.length; i++) {
+      if (!Runtime.functionPointers[i]) {
+        Runtime.functionPointers[i] = func;
+        return {{{ FUNCTION_POINTER_ALIGNMENT }}}*(1 + i);
+      }
+    }
+    throw 'Finished up all reserved function pointers. Use a higher value for RESERVED_FUNCTION_POINTERS.';
+#else
+    var table = FUNCTION_TABLE;
+    var ret = table.length;
+    assert(ret % {{{ FUNCTION_POINTER_ALIGNMENT }}} === 0);
+    table.push(func);
+    for (var i = 0; i < {{{ FUNCTION_POINTER_ALIGNMENT }}}-1; i++) table.push(0);
     return ret;
+#endif
+  },
+
+  removeFunction: function(index) {
+#if ASM_JS
+    Runtime.functionPointers[(index-{{{ FUNCTION_POINTER_ALIGNMENT }}})/{{{ FUNCTION_POINTER_ALIGNMENT }}}] = null;
+#else
+    var table = FUNCTION_TABLE;
+    table[index] = null;
+#endif
+  },
+
+  getAsmConst: function(code, numArgs) {
+    // code is a constant string on the heap, so we can cache these
+    if (!Runtime.asmConstCache) Runtime.asmConstCache = {};
+    var func = Runtime.asmConstCache[code];
+    if (func) return func;
+    var args = [];
+    for (var i = 0; i < numArgs; i++) {
+      args.push(String.fromCharCode(36) + i); // $0, $1 etc
+    }
+    var source = Pointer_stringify(code);
+    if (source[0] === '"') {
+      // tolerate EM_ASM("..code..") even though EM_ASM(..code..) is correct
+      if (source.indexOf('"', 1) === source.length-1) {
+        source = source.substr(1, source.length-2);
+      } else {
+        // something invalid happened, e.g. EM_ASM("..code($0)..", input)
+        abort('invalid EM_ASM input |' + source + '|. Please use EM_ASM(..code..) (no quotes) or EM_ASM({ ..code($0).. }, input) (to input values)');
+      }
+    }
+#if NO_DYNAMIC_EXECUTION == 0
+    try {
+      var evalled = eval('(function(' + args.join(',') + '){ ' + source + ' })'); // new Function does not allow upvars in node
+    } catch(e) {
+      Module.printErr('error in executing inline EM_ASM code: ' + e + ' on: \n\n' + source + '\n\nwith args |' + args + '| (make sure to use the right one out of EM_ASM, EM_ASM_ARGS, etc.)');
+      throw e;
+    }
+#else
+    abort('NO_DYNAMIC_EXECUTION was set, cannot eval, so EM_ASM is not functional');
+#endif
+    return Runtime.asmConstCache[code] = evalled;
   },
 
   warnOnce: function(text) {
@@ -328,10 +441,11 @@ var Runtime = {
 
   funcWrappers: {},
 
-  getFuncWrapper: function(func) {
+  getFuncWrapper: function(func, sig) {
+    assert(sig);
     if (!Runtime.funcWrappers[func]) {
-      Runtime.funcWrappers[func] = function() {
-        FUNCTION_TABLE[func].apply(null, arguments);
+      Runtime.funcWrappers[func] = function dynCall_wrapper() {
+        return Runtime.dynCall(sig, func, arguments);
       };
     }
     return Runtime.funcWrappers[func];
@@ -339,40 +453,61 @@ var Runtime = {
 
   // Returns a processor of UTF.
   // processCChar() receives characters from a C-like UTF representation and returns JS string fragments.
+  // See RFC3629 for details, the bytes are assumed to be valid UTF-8
   // processJSString() receives a JS string and returns a C-like UTF representation in an array
   UTF8Processor: function() {
     var buffer = [];
     var needed = 0;
     this.processCChar = function (code) {
-      code = code & 0xff;
-      if (needed) {
-        buffer.push(code);
-        needed--;
-      }
+      code = code & 0xFF;
+
       if (buffer.length == 0) {
-        if (code < 128) return String.fromCharCode(code);
+        if ((code & 0x80) == 0x00) {        // 0xxxxxxx
+          return String.fromCharCode(code);
+        }
         buffer.push(code);
-        if (code > 191 && code < 224) {
+        if ((code & 0xE0) == 0xC0) {        // 110xxxxx
           needed = 1;
-        } else {
+        } else if ((code & 0xF0) == 0xE0) { // 1110xxxx
           needed = 2;
+        } else {                            // 11110xxx
+          needed = 3;
         }
         return '';
       }
-      if (needed > 0) return '';
+
+      if (needed) {
+        buffer.push(code);
+        needed--;
+        if (needed > 0) return '';
+      }
+
       var c1 = buffer[0];
       var c2 = buffer[1];
       var c3 = buffer[2];
+      var c4 = buffer[3];
       var ret;
-      if (c1 > 191 && c1 < 224) {
-        ret = String.fromCharCode(((c1 & 31) << 6) | (c2 & 63));
+      if (buffer.length == 2) {
+        ret = String.fromCharCode(((c1 & 0x1F) << 6)  | (c2 & 0x3F));
+      } else if (buffer.length == 3) {
+        ret = String.fromCharCode(((c1 & 0x0F) << 12) | ((c2 & 0x3F) << 6)  | (c3 & 0x3F));
       } else {
-        ret = String.fromCharCode(((c1 & 15) << 12) | ((c2 & 63) << 6) | (c3 & 63));
+        // http://mathiasbynens.be/notes/javascript-encoding#surrogate-formulae
+        var codePoint = ((c1 & 0x07) << 18) | ((c2 & 0x3F) << 12) |
+                        ((c3 & 0x3F) << 6)  | (c4 & 0x3F);
+        ret = String.fromCharCode(
+          Math.floor((codePoint - 0x10000) / 0x400) + 0xD800,
+          (codePoint - 0x10000) % 0x400 + 0xDC00);
       }
       buffer.length = 0;
       return ret;
     }
-    this.processJSString = function(string) {
+    this.processJSString = function processJSString(string) {
+      /* TODO: use TextEncoder when present,
+        var encoder = new TextEncoder();
+        encoder['encoding'] = "utf-8";
+        var utf8Array = encoder['encode'](aMsg.data);
+      */
       string = unescape(encodeURIComponent(string));
       var ret = [];
       for (var i = 0; i < string.length; i++) {
@@ -380,6 +515,19 @@ var Runtime = {
       }
       return ret;
     }
+  },
+
+#if RETAIN_COMPILER_SETTINGS
+  compilerSettings: {},
+#endif
+
+  getCompilerSetting: function(name) {
+#if RETAIN_COMPILER_SETTINGS == 0
+    throw 'You must build with -s RETAIN_COMPILER_SETTINGS=1 for Runtime.getCompilerSetting or emscripten_get_compiler_setting to work';
+#else
+    if (!(name in Runtime.compilerSettings)) return 'invalid compiler setting: ' + name;
+    return Runtime.compilerSettings[name];
+#endif
   },
 
 #if RUNTIME_DEBUG
@@ -437,6 +585,7 @@ var Runtime = {
 
 Runtime.stackAlloc = unInline('stackAlloc', ['size']);
 Runtime.staticAlloc = unInline('staticAlloc', ['size']);
+Runtime.dynamicAlloc = unInline('dynamicAlloc', ['size']);
 Runtime.alignMemory = unInline('alignMemory', ['size', 'quantum']);
 Runtime.makeBigInt = unInline('makeBigInt', ['low', 'high', 'unsigned']);
 
@@ -459,28 +608,21 @@ function getRuntime() {
 
 // Converts a value we have as signed, into an unsigned value. For
 // example, -1 in int32 would be a very large number as unsigned.
-function unSign(value, bits, ignore, sig) {
+function unSign(value, bits, ignore) {
   if (value >= 0) {
-#if CHECK_SIGNS
-    if (!ignore) CorrectionsMonitor.note('UnSign', 1, sig);
-#endif
     return value;
   }
 #if CHECK_SIGNS
-  if (!ignore) CorrectionsMonitor.note('UnSign', 0, sig);
+  if (!ignore) throw 'UnSign';
 #endif
   return bits <= 32 ? 2*Math.abs(1 << (bits-1)) + value // Need some trickery, since if bits == 32, we are right at the limit of the bits JS uses in bitshifts
                     : Math.pow(2, bits)         + value;
-  // TODO: clean up previous line
 }
 
 // Converts a value we have as unsigned, into a signed value. For
 // example, 200 in a uint8 would be a negative number.
-function reSign(value, bits, ignore, sig) {
+function reSign(value, bits, ignore) {
   if (value <= 0) {
-#if CHECK_SIGNS
-    if (!ignore) CorrectionsMonitor.note('ReSign', 1, sig);
-#endif
     return value;
   }
   var half = bits <= 32 ? Math.abs(1 << (bits-1)) // abs is needed if bits == 32
@@ -492,10 +634,7 @@ function reSign(value, bits, ignore, sig) {
                                                        // but, in general there is no perfect solution here. With 64-bit ints, we get rounding and errors
                                                        // TODO: In i64 mode 1, resign the two parts separately and safely
 #if CHECK_SIGNS
-    if (!ignore) {
-      CorrectionsMonitor.note('ReSign', 0, sig);
-      noted = true;
-    }
+    if (!ignore) throw 'ReSign';
 #endif
     value = -2*half + value; // Cannot bitshift half, as it may be at the limit of the bits JS uses in bitshifts
   }
@@ -504,18 +643,24 @@ function reSign(value, bits, ignore, sig) {
   // without CHECK_SIGNS, we would just do the |0 shortcut, so check that that
   // would indeed give the exact same result.
   if (bits === 32 && (value|0) !== value && typeof value !== 'boolean') {
-    if (!ignore) {
-      CorrectionsMonitor.note('ReSign', 0, sig);
-      noted = true;
-    }
+    if (!ignore) throw 'ReSign';
   }
-  if (!noted) CorrectionsMonitor.note('ReSign', 1, sig);
 #endif
   return value;
 }
 
-// Just a stub. We don't care about noting compile-time corrections. But they are called.
-var CorrectionsMonitor = {
-  note: function(){}
-};
+// The address globals begin at. Very low in memory, for code size and optimization opportunities.
+// Above 0 is static memory, starting with globals.
+// Then the stack.
+// Then 'dynamic' memory for sbrk.
+Runtime.GLOBAL_BASE = Runtime.alignMemory(1);
+
+if (RETAIN_COMPILER_SETTINGS) {
+  var blacklist = set('RELOOPER', 'STRUCT_INFO');
+  for (var x in this) {
+    try {
+      if (x[0] !== '_' && !(x in blacklist) && x == x.toUpperCase() && (typeof this[x] === 'number' || typeof this[x] === 'string' || this.isArray())) Runtime.compilerSettings[x] = this[x];
+    } catch(e){}
+  }
+}
 

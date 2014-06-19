@@ -16,9 +16,21 @@
 #include <cstddef>
 #include "system_error"
 
+#ifndef __has_include
+#define __has_include(inc) 0
+#endif
+
+#ifdef __APPLE__
+#include <cxxabi.h>
+#elif defined(LIBCXXRT) || __has_include(<cxxabi.h>)
+#include <cxxabi.h>
+#endif
+
 // Note:  optimize for size
 
+#if ! defined(_LIBCPP_MSVC)
 #pragma GCC visibility push(hidden)
+#endif
 
 namespace
 {
@@ -29,7 +41,7 @@ private:
     const char* str_;
 
     typedef std::size_t unused_t;
-    typedef std::int32_t count_t;
+    typedef std::ptrdiff_t count_t;
 
     static const std::ptrdiff_t offset = static_cast<std::ptrdiff_t>(2*sizeof(unused_t) +
                                                                        sizeof(count_t));
@@ -37,9 +49,9 @@ private:
     count_t& count() const _NOEXCEPT {return (count_t&)(*(str_ - sizeof(count_t)));}
 public:
     explicit __libcpp_nmstr(const char* msg);
-    __libcpp_nmstr(const __libcpp_nmstr& s) _LIBCPP_CANTTHROW;
-    __libcpp_nmstr& operator=(const __libcpp_nmstr& s) _LIBCPP_CANTTHROW;
-    ~__libcpp_nmstr() _LIBCPP_CANTTHROW;
+    __libcpp_nmstr(const __libcpp_nmstr& s) _NOEXCEPT;
+    __libcpp_nmstr& operator=(const __libcpp_nmstr& s) _NOEXCEPT;
+    ~__libcpp_nmstr();
     const char* c_str() const _NOEXCEPT {return str_;}
 };
 
@@ -51,23 +63,23 @@ __libcpp_nmstr::__libcpp_nmstr(const char* msg)
     c[0] = c[1] = len;
     str_ += offset;
     count() = 0;
-    std::strcpy(const_cast<char*>(c_str()), msg);
+    std::memcpy(const_cast<char*>(c_str()), msg, len + 1);
 }
 
 inline
-__libcpp_nmstr::__libcpp_nmstr(const __libcpp_nmstr& s)
+__libcpp_nmstr::__libcpp_nmstr(const __libcpp_nmstr& s) _NOEXCEPT
     : str_(s.str_)
 {
     __sync_add_and_fetch(&count(), 1);
 }
 
 __libcpp_nmstr&
-__libcpp_nmstr::operator=(const __libcpp_nmstr& s)
+__libcpp_nmstr::operator=(const __libcpp_nmstr& s) _NOEXCEPT
 {
     const char* p = str_;
     str_ = s.str_;
     __sync_add_and_fetch(&count(), 1);
-    if (__sync_add_and_fetch((count_t*)(p-sizeof(count_t)), -1) < 0)
+    if (__sync_add_and_fetch((count_t*)(p-sizeof(count_t)), count_t(-1)) < 0)
         delete [] (p-offset);
     return *this;
 }
@@ -75,13 +87,15 @@ __libcpp_nmstr::operator=(const __libcpp_nmstr& s)
 inline
 __libcpp_nmstr::~__libcpp_nmstr()
 {
-    if (__sync_add_and_fetch(&count(), -1) < 0)
+    if (__sync_add_and_fetch(&count(), count_t(-1)) < 0)
         delete [] (str_ - offset);
 }
 
 }
 
+#if ! defined(_LIBCPP_MSVC)
 #pragma GCC visibility pop
+#endif
 
 namespace std  // purposefully not using versioning namespace
 {
@@ -113,6 +127,8 @@ logic_error::operator=(const logic_error& le) _NOEXCEPT
     return *this;
 }
 
+#if !defined(_LIBCPPABI_VERSION) && !defined(LIBSTDCXX)
+
 logic_error::~logic_error() _NOEXCEPT
 {
     __libcpp_nmstr& s = (__libcpp_nmstr&)__imp_;
@@ -125,6 +141,8 @@ logic_error::what() const _NOEXCEPT
     __libcpp_nmstr& s = (__libcpp_nmstr&)__imp_;
     return s.c_str();
 }
+
+#endif
 
 runtime_error::runtime_error(const string& msg)
 {
@@ -153,6 +171,8 @@ runtime_error::operator=(const runtime_error& le) _NOEXCEPT
     return *this;
 }
 
+#if !defined(_LIBCPPABI_VERSION) && !defined(LIBSTDCXX)
+
 runtime_error::~runtime_error() _NOEXCEPT
 {
     __libcpp_nmstr& s = (__libcpp_nmstr&)__imp_;
@@ -174,5 +194,7 @@ out_of_range::~out_of_range() _NOEXCEPT {}
 range_error::~range_error() _NOEXCEPT {}
 overflow_error::~overflow_error() _NOEXCEPT {}
 underflow_error::~underflow_error() _NOEXCEPT {}
+
+#endif
 
 }  // std

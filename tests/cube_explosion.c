@@ -12,7 +12,7 @@ RESULTING FROM THE USE, MODIFICATION, OR
 REDISTRIBUTION OF THIS SOFTWARE.
 */
 
-#if !EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 #define USE_GLEW 1
 #endif
 
@@ -28,20 +28,6 @@ REDISTRIBUTION OF THIS SOFTWARE.
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-
-void verify() {
-  int width = 640, height = 480;
-  unsigned char *data = (unsigned char*)malloc(width*height*4);
-  glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, data);
-  int sum = 0;
-  for (int x = 0; x < width*height*4; x++) {
-    if (x % 4 != 3) sum += x * data[x];
-  }
-#if EMSCRIPTEN
-  int result = sum;
-  REPORT_RESULT();
-#endif
-}
 
 int main(int argc, char *argv[])
 {
@@ -64,8 +50,11 @@ int main(int argc, char *argv[])
     // Create a texture
 
     GLuint texture;
+    assert(!glIsTexture(1)); // not a texture
     glGenTextures( 1, &texture );
+    assert(!glIsTexture(texture)); // not a texture until glBindTexture
     glBindTexture( GL_TEXTURE_2D, texture );
+    assert(glIsTexture(texture)); // NOW it is a texture
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
     GLubyte textureData[16*16*4];
@@ -223,9 +212,11 @@ int main(int argc, char *argv[])
 
     SDL_GL_SwapBuffers();
 
-    verify();
-   
-#if !EMSCRIPTEN
+    assert(glIsTexture(texture)); // still a texture
+    glDeleteTextures(1, &texture);
+    assert(!glIsTexture(texture)); // but not anymore
+
+#ifndef __EMSCRIPTEN__
     SDL_Delay(1500);
 #endif
 

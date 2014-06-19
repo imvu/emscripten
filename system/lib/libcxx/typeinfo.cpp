@@ -7,15 +7,30 @@
 //
 //===----------------------------------------------------------------------===//
 #include <stdlib.h>
-#if __APPLE__
+
+#ifndef __has_include
+#define __has_include(inc) 0
+#endif
+
+#ifdef __APPLE__
+#include <cxxabi.h>
+#elif defined(LIBCXXRT) || __has_include(<cxxabi.h>)
 #include <cxxabi.h>
 #endif
 
 #include "typeinfo"
 
+#if !defined(LIBCXXRT) && !defined(_LIBCPPABI_VERSION)
+
 std::bad_cast::bad_cast() _NOEXCEPT
 {
 }
+
+std::bad_typeid::bad_typeid() _NOEXCEPT
+{
+}
+
+#ifndef __GLIBCXX__
 
 std::bad_cast::~bad_cast() _NOEXCEPT
 {
@@ -25,10 +40,6 @@ const char*
 std::bad_cast::what() const _NOEXCEPT
 {
   return "std::bad_cast";
-}
-
-std::bad_typeid::bad_typeid() _NOEXCEPT
-{
 }
 
 std::bad_typeid::~bad_typeid() _NOEXCEPT
@@ -41,10 +52,22 @@ std::bad_typeid::what() const _NOEXCEPT
   return "std::bad_typeid";
 }
 
-#if __APPLE__
+#ifdef __APPLE__
   // On Darwin, the cxa_bad_* functions cannot be in the lower level library
   // because bad_cast and bad_typeid are defined in his higher level library
-  void __cxxabiv1::__cxa_bad_typeid() { throw std::bad_typeid(); }
-  void __cxxabiv1::__cxa_bad_cast() { throw std::bad_cast(); }
+  void __cxxabiv1::__cxa_bad_typeid()
+  {
+#ifndef _LIBCPP_NO_EXCEPTIONS
+     throw std::bad_typeid();
+#endif
+  }
+  void __cxxabiv1::__cxa_bad_cast()
+  {
+#ifndef _LIBCPP_NO_EXCEPTIONS
+      throw std::bad_cast();
+#endif
+  }
 #endif
 
+#endif  // !__GLIBCXX__
+#endif  // !LIBCXXRT && !_LIBCPPABI_VERSION

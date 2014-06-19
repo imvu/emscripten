@@ -46,8 +46,13 @@
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#include <Glut/glut.h>
+#else
 #include <GL/gl.h>
 #include <GL/glut.h>
+#endif
 
 #ifndef HAVE_BUILTIN_SINCOS
 #include "sincos.h"
@@ -640,6 +645,7 @@ static const char vertex_shader[] =
 
 static const char fragment_shader[] =
 "#ifdef GL_ES\n"
+"#extension GL_OES_standard_derivatives : enable\n"
 "precision mediump float;\n"
 "#endif\n"
 "varying vec4 Color;\n"
@@ -716,7 +722,7 @@ main(int argc, char *argv[])
    glutCreateWindow("es2gears");
 
    /* Set up glut callback functions */
-   gears_idle();
+   glutIdleFunc (gears_idle);
    glutReshapeFunc(gears_reshape);
    glutDisplayFunc(gears_draw);
    glutSpecialFunc(gears_special);
