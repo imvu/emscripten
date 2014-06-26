@@ -171,11 +171,12 @@ var LibraryEmVal = {
   },
 
   // appease jshint (technically this code uses eval)
-  $global: (function(){return Function;})()('return this')(),
+  $global: function() { return (function(){return Function;})()('return this')(); },
   _emval_get_global__deps: ['_emval_register', '$getStringOrSymbol', '$global'],
   _emval_get_global: function(name) {
     name = getStringOrSymbol(name);
-    return __emval_register(global[name]);
+    // this sucks. pre librarification of emval.js, i could store a reference to the global object rather than calling global() every time
+    return __emval_register(global()[name]);
   },
 
   _emval_get_module_property__deps: ['$getStringOrSymbol', '_emval_register'],
