@@ -1,3 +1,15 @@
+/*global Module:true, Runtime*/
+/*global HEAP32*/
+/*global new_*/
+/*global createNamedFunction*/
+/*global readLatin1String, writeStringToMemory*/
+/*global requireRegisteredType, throwBindingError, runDestructors*/
+/*jslint sub:true*/ /* The symbols 'fromWireType' and 'toWireType' must be accessed via array notation to be closure-safe since craftInvokerFunction crafts functions as strings that can't be closured. */
+
+// -- jshint doesn't understand library syntax, so we need to mark the symbols exposed here
+/*global getStringOrSymbol, emval_handle_array, __emval_register, __emval_unregister, requireHandle, count_emval_handles, emval_symbols, emval_free_list, get_first_emval, __emval_decref, emval_newers*/
+/*global craftEmvalAllocator, __emval_addMethodCaller, emval_methodCallers, LibraryManager, mergeInto, __emval_allocateDestructors, global, __emval_lookupTypes*/
+
 var LibraryEmVal = {
   $emval_handle_array: [{}], // reserve zero
   $emval_free_list: [],
