@@ -1,3 +1,26 @@
+/*global LibraryManager, mergeInto*/
+
+/*global Module, asm*/
+/*global _malloc, _free, _memcpy*/
+/*global FUNCTION_TABLE, HEAP8, HEAPU8, HEAP16, HEAPU16, HEAP32, HEAPU32, HEAPF32, HEAPF64*/
+/*global readLatin1String*/
+/*global __emval_register, emval_handle_array, __emval_decref*/
+/*global ___getTypeName*/
+/*global requireHandle*/
+/*jslint sub:true*/ /* The symbols 'fromWireType' and 'toWireType' must be accessed via array notation to be closure-safe since craftInvokerFunction crafts functions as strings that can't be closured. */
+
+// -- jshint doesn't understand library syntax, so we need to specifically tell it about the symbols we define
+/*global typeDependencies, flushPendingDeletes, getTypeName, getBasestPointer, throwBindingError, UnboundTypeError, _embind_repr, registeredInstances, registeredTypes, getShiftFromSize*/
+/*global ensureOverloadTable, requireFunction, awaitingDependencies, makeLegalFunctionName, embind_charCodes:true, registerType, createNamedFunction, RegisteredPointer, throwInternalError*/
+/*global simpleReadValueFromPointer, floatReadValueFromPointer, integerReadValueFromPointer, replacePublicSymbol, craftInvokerFunction, tupleRegistrations*/
+/*global ClassHandle, makeClassHandle, structRegistrations, whenDependentTypesAreResolved, BindingError, deletionQueue, delayFunction:true, upcastPointer*/
+/*global exposePublicSymbol, heap32VectorToArray, new_, RegisteredPointer_getPointee, RegisteredPointer_destructor, RegisteredPointer_deleteObject, char_0, char_9*/
+/*global getInheritedInstanceCount, getLiveInheritedInstances, setDelayFunction, InternalError, runDestructors*/
+/*global requireRegisteredType, unregisterInheritedInstance, registerInheritedInstance, PureVirtualError, throwUnboundTypeError*/
+/*global assert, validateThis, downcastPointer, registeredPointers, RegisteredClass, getInheritedInstance, ClassHandle_isAliasOf, ClassHandle_clone, ClassHandle_isDeleted, ClassHandle_deleteLater*/
+/*global throwInstanceAlreadyDeleted, runDestructor, shallowCopy*/
+/*global RegisteredPointer_fromWireType, constNoSmartPtrRawPointerToWireType, nonConstNoSmartPtrRawPointerToWireType, genericPointerToWireType*/
+
 var LibraryEmbind = {
   $InternalError__postset: "InternalError = Module['InternalError'] = extendError(Error, 'InternalError');",
   $InternalError__deps: ['$extendError'],
