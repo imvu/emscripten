@@ -126,7 +126,7 @@ function JSify(data, functionsOnly) {
   function makeEmptyStruct(type) {
     var ret = [];
     var typeData = Types.types[type];
-    assertTrue(typeData);
+    assertTrue(typeData, 'typeData is falsy');
     for (var i = 0; i < typeData.flatSize; i++) {
       ret.push(0);
     }
@@ -135,7 +135,7 @@ function JSify(data, functionsOnly) {
 
   function alignStruct(values, type) {
     var typeData = Types.types[type];
-    assertTrue(typeData);
+    assertTrue(typeData, 'typeData is falsy');
     var ret = new Array(typeData.flatSize);
     var index = 0;
     var i = 0;

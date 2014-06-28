@@ -71,7 +71,7 @@ def emscripten(env, target_js, source_bc):
     # for debugging and reading generated code.
     # not in critical path, uses spare cores.
     env.LLVMDis(buildName('ll'), source_bc)
-    env.LLVMOpt(
+    [opt_ll] = env.LLVMOpt(
         buildName('opt.ll'),
         source_bc,
         LLVM_OPT_FLAGS=['-S'])
@@ -82,7 +82,7 @@ def emscripten(env, target_js, source_bc):
 
     [raw_emscripten_js] = env.Emscripten(
         buildName('raw.js'),
-        [opt_bc])
+        [opt_ll])
 
     [concatenated_js] = env.Concatenate(
         buildName('concat.js'),
@@ -407,7 +407,7 @@ def generate(env):
         RANLIBCOM='',
         CCFLAGS=[
             '-U__STRICT_ANSI__',
-            '-target', 'asmjs-unknown-emscripten',
+            '-target', 'le32-unknown-nacl',
             '-nostdinc',
             '-Wno-#warnings',
             '-Wno-error=unused-variable',

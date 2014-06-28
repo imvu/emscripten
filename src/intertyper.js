@@ -196,7 +196,7 @@ function intertyper(lines, sidePass, baseLineNums) {
       if (mainPass && (line[0] == '%' || line[0] == '@')) {
         // If this isn't a type, it's a global variable, make a note of the information now, we will need it later
         var parts = line.split(' = ');
-        assert(parts.length >= 2);
+        assert(parts.length >= 2, 'more than 2 parts in line: ' + line);
         var left = parts[0], right = parts.slice(1).join(' = ');
         var testType = /^type .*/.exec(right);
         if (!testType) {

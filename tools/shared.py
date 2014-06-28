@@ -1429,7 +1429,7 @@ class Building:
     cmdline = [PYTHON, EMSCRIPTEN, filename + ('.o.ll' if append_ext else ''), '-o', filename + '.o.js'] + args
     if jsrun.TRACK_PROCESS_SPAWNS:
       logging.info('Executing emscripten.py compiler with cmdline "' + ' '.join(cmdline) + '"')
-    jsrun.timeout_run(Popen(cmdline, stdout=PIPE), None, 'Compiling')
+    jsrun.timeout_run(Popen(cmdline, stdout=PIPE), None, 'Compiling: %s' % (cmdline,))
 
     # Clean up .rsp file the compiler used after we are finished.
     if WINDOWS:

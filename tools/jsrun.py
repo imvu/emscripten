@@ -13,6 +13,8 @@ def timeout_run(proc, timeout=None, note='unnamed process', full_output=False):
       raise Exception("Timed out: " + note)
   out = proc.communicate()
   out = map(lambda o: '' if o is None else o, out)
+  if proc.returncode:
+    raise Exception('The command ' + note + ' returned with code ' + str(proc.returncode) + '! Output: ' + ('\n'.join(out))[:1000])
   if TRACK_PROCESS_SPAWNS:
     logging.info('Process ' + str(proc.pid) + ' finished after ' + str(time.time() - start) + ' seconds. Exit code: ' + str(proc.returncode))
   return '\n'.join(out) if full_output else out[0]
