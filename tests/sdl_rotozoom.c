@@ -2,7 +2,7 @@
 #include "SDL/SDL_image.h"
 #include "SDL/SDL_rotozoom.h"
 
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
 #include "emscripten.h"
 #endif
 
@@ -38,14 +38,14 @@ int main(int argc, char **argv) {
     sprite[2] = zoomSurface(sprite[0], 0.5, 0.5, SMOOTHING_ON);
     sprite[3] = zoomSurface(sprite[1], 0.5, 0.5, SMOOTHING_ON);
     sprite[4] = rotozoomSurface(sprite[0], -20, 0.3, SMOOTHING_ON);
-    sprite[5] = rotozoomSurface(sprite[1], 45, 0.5, SMOOTHING_ON);
+    sprite[5] = rotozoomSurface(sprite[1], 20, 1, SMOOTHING_ON);
     sprite[6] = zoomSurface(sprite[0], -0.5, 0.5, SMOOTHING_ON);
     sprite[7] = zoomSurface(sprite[0], -0.5, -0.5, SMOOTHING_ON);
     sprite[8] = rotozoomSurface(sprite[1], 0, 0.5, SMOOTHING_ON);
 
     mainloop();
 
-#ifndef EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
     SDL_Event evt;
     SDL_SaveBMP(screen, "native_output.bmp");
     while (1) {

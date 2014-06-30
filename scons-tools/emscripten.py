@@ -9,11 +9,6 @@ from SCons.Scanner import Scanner
 def exists(env):
     return True
 
-def _expand_settings_flags(settings, env):
-    return [
-        ('-s%s=%s' % (KEY, json.dumps(VALUE).replace('"', '\\"')))
-        for KEY, VALUE in settings.items() ]
-
 emscripten_version_files = {}
 
 def build_version_file(env):
@@ -86,19 +81,10 @@ def emscripten(env, target_js, source_bc):
         buildName('raw.js'),
         [opt_ll])
 
-    [optimized_js] = env.JSOptimizer(
-        buildName('opt.js'),
-        raw_emscripten_js)
-
-    prejs = [
-        env['EMSCRIPTEN_PREJS'],
-        '${EMSCRIPTEN_HOME}/src/embind/emval.js',
-        '${EMSCRIPTEN_HOME}/src/embind/embind.js' ]
-
     [concatenated_js] = env.Concatenate(
         buildName('concat.js'),
-        [ prejs,
-          optimized_js,
+        [ env['EMSCRIPTEN_PREJS'],
+          raw_emscripten_js,
           env['EMSCRIPTEN_POSTJS'] ])
 
     DISABLE_EMSCRIPTEN_WARNINGS = [
@@ -118,7 +104,7 @@ def emscripten(env, target_js, source_bc):
 
     [iter_global_emscripten_js] = env.Concatenate(
         buildName('iter.js'),
-        [ prejs,
+        [ env['EMSCRIPTEN_PREJS'],
           raw_emscripten_js,
           env['EMSCRIPTEN_POSTJS'] ])
 
@@ -139,11 +125,6 @@ def emscripten(env, target_js, source_bc):
         concatenated_js,
         CLOSURE_FLAGS=['--language_in', 'ECMASCRIPT5']+DISABLE_EMSCRIPTEN_WARNINGS+['--formatting', 'PRETTY_PRINT', '--compilation_level', 'ADVANCED_OPTIMIZATIONS'])
 
-    [global_emscripten_min_js] = env.JSOptimizer(
-        buildName('global.min.js'),
-        closure_js,
-        JS_OPTIMIZER_PASSES=['last'])
-
     [emscripten_iteration_js] = env.WrapInModule(
         buildName('iteration.js'),
         iter_global_emscripten_js)
@@ -154,14 +135,167 @@ def emscripten(env, target_js, source_bc):
 
     [emscripten_min_js] = env.WrapInModule(
         buildName('min.js'),
-        global_emscripten_min_js)
+        closure_js)
 
     return [emscripten_iteration_js, emscripten_js, emscripten_min_js]
 
 LIBC_SOURCES = [
     'system/lib/dlmalloc.c',
-    'system/lib/libc/musl/src/string/wmemset.c',
+    'system/lib/libc/musl/src/internal/floatscan.c',
+    'system/lib/libc/musl/src/internal/shgetc.c',
+    'system/lib/libc/musl/src/ctype/isalnum.c',
+    'system/lib/libc/musl/src/ctype/isalpha.c',
+    'system/lib/libc/musl/src/ctype/isascii.c',
+    'system/lib/libc/musl/src/ctype/isblank.c',
+    'system/lib/libc/musl/src/ctype/iscntrl.c',
+    'system/lib/libc/musl/src/ctype/isdigit.c',
+    'system/lib/libc/musl/src/ctype/isgraph.c',
+    'system/lib/libc/musl/src/ctype/islower.c',
+    'system/lib/libc/musl/src/ctype/isprint.c',
+    'system/lib/libc/musl/src/ctype/ispunct.c',
+    'system/lib/libc/musl/src/ctype/isspace.c',
+    'system/lib/libc/musl/src/ctype/isupper.c',
+    'system/lib/libc/musl/src/ctype/iswalnum.c',
+    'system/lib/libc/musl/src/ctype/iswalpha.c',
+    'system/lib/libc/musl/src/ctype/iswblank.c',
+    'system/lib/libc/musl/src/ctype/iswcntrl.c',
+    'system/lib/libc/musl/src/ctype/iswctype.c',
+    'system/lib/libc/musl/src/ctype/iswdigit.c',
+    'system/lib/libc/musl/src/ctype/iswgraph.c',
+    'system/lib/libc/musl/src/ctype/iswlower.c',
+    'system/lib/libc/musl/src/ctype/iswprint.c',
+    'system/lib/libc/musl/src/ctype/iswpunct.c',
+    'system/lib/libc/musl/src/ctype/iswspace.c',
+    'system/lib/libc/musl/src/ctype/iswupper.c',
+    'system/lib/libc/musl/src/ctype/iswxdigit.c',
+    'system/lib/libc/musl/src/ctype/isxdigit.c',
+    'system/lib/libc/musl/src/ctype/toascii.c',
+    'system/lib/libc/musl/src/ctype/toupper.c',
+    'system/lib/libc/musl/src/ctype/towctrans.c',
+    'system/lib/libc/musl/src/ctype/wcswidth.c',
+    'system/lib/libc/musl/src/ctype/wctrans.c',
+    'system/lib/libc/musl/src/ctype/wcwidth.c',
+    'system/lib/libc/musl/src/ctype/tolower.c',
+
+    'system/lib/libc/musl/src/stdio/__overflow.c',
+    'system/lib/libc/musl/src/stdio/__string_read.c',
+    'system/lib/libc/musl/src/stdio/__toread.c',
+    'system/lib/libc/musl/src/stdio/__towrite.c',
+    'system/lib/libc/musl/src/stdio/__uflow.c',
+    'system/lib/libc/musl/src/stdio/asprintf.c',
+    'system/lib/libc/musl/src/stdio/fputwc.c',
+    'system/lib/libc/musl/src/stdio/fputws.c',
+    'system/lib/libc/musl/src/stdio/fwprintf.c',
+    'system/lib/libc/musl/src/stdio/fwrite.c',
+    'system/lib/libc/musl/src/stdio/snprintf.c',
+    'system/lib/libc/musl/src/stdio/sprintf.c',
+    'system/lib/libc/musl/src/stdio/sscanf.c',
+    'system/lib/libc/musl/src/stdio/swprintf.c',
+    'system/lib/libc/musl/src/stdio/vasprintf.c',
+    'system/lib/libc/musl/src/stdio/vfprintf.c',
+    'system/lib/libc/musl/src/stdio/vfscanf.c',
+    'system/lib/libc/musl/src/stdio/vfwprintf.c',
+    'system/lib/libc/musl/src/stdio/vsnprintf.c',
+    'system/lib/libc/musl/src/stdio/vsprintf.c',
+    'system/lib/libc/musl/src/stdio/vsscanf.c',
+    'system/lib/libc/musl/src/stdio/vswprintf.c',
+    'system/lib/libc/musl/src/stdio/vwprintf.c',
+    'system/lib/libc/musl/src/stdio/wprintf.c',
+
+    'system/lib/libc/musl/src/stdlib/atof.c',
+    'system/lib/libc/musl/src/stdlib/strtod.c',
+
+    'system/lib/libc/musl/src/string/bcmp.c',
+    'system/lib/libc/musl/src/string/bcopy.c',
+    'system/lib/libc/musl/src/string/bzero.c',
+    'system/lib/libc/musl/src/string/index.c',
+    'system/lib/libc/musl/src/string/memccpy.c',
+    'system/lib/libc/musl/src/string/memchr.c',
+    'system/lib/libc/musl/src/string/memcmp.c',
+    'system/lib/libc/musl/src/string/memmem.c',
+    'system/lib/libc/musl/src/string/mempcpy.c',
+    'system/lib/libc/musl/src/string/memrchr.c',
+    'system/lib/libc/musl/src/string/rindex.c',
+    'system/lib/libc/musl/src/string/stpcpy.c',
+    'system/lib/libc/musl/src/string/strcasecmp.c',
+    'system/lib/libc/musl/src/string/strcasestr.c',
+    'system/lib/libc/musl/src/string/strchr.c',
+    'system/lib/libc/musl/src/string/strchrnul.c',
+    'system/lib/libc/musl/src/string/strcmp.c',
+    'system/lib/libc/musl/src/string/strcspn.c',
+    'system/lib/libc/musl/src/string/strdup.c',
+    'system/lib/libc/musl/src/string/strlcat.c',
+    'system/lib/libc/musl/src/string/strlcpy.c',
+    'system/lib/libc/musl/src/string/strncasecmp.c',
+    'system/lib/libc/musl/src/string/strncat.c',
+    'system/lib/libc/musl/src/string/strncmp.c',
+    'system/lib/libc/musl/src/string/strndup.c',
+    'system/lib/libc/musl/src/string/strnlen.c',
+    'system/lib/libc/musl/src/string/strpbrk.c',
+    'system/lib/libc/musl/src/string/strrchr.c',
+    'system/lib/libc/musl/src/string/strsep.c',
+    'system/lib/libc/musl/src/string/strspn.c',
+    'system/lib/libc/musl/src/string/strstr.c',
+    'system/lib/libc/musl/src/string/strtok.c',
+    'system/lib/libc/musl/src/string/strtok_r.c',
+    'system/lib/libc/musl/src/string/strverscmp.c',
+    'system/lib/libc/musl/src/string/wcpcpy.c',
+    'system/lib/libc/musl/src/string/wcpncpy.c',
+    'system/lib/libc/musl/src/string/wcscasecmp.c',
+    'system/lib/libc/musl/src/string/wcscasecmp_l.c',
+    'system/lib/libc/musl/src/string/wcscat.c',
+    'system/lib/libc/musl/src/string/wcschr.c',
+    'system/lib/libc/musl/src/string/wcscmp.c',
+    'system/lib/libc/musl/src/string/wcscpy.c',
+    'system/lib/libc/musl/src/string/wcscspn.c',
+    'system/lib/libc/musl/src/string/wcsdup.c',
+    'system/lib/libc/musl/src/string/wcslen.c',
+    'system/lib/libc/musl/src/string/wcsncasecmp.c',
+    'system/lib/libc/musl/src/string/wcsncasecmp_l.c',
+    'system/lib/libc/musl/src/string/wcsncat.c',
+    'system/lib/libc/musl/src/string/wcsncmp.c',
+    'system/lib/libc/musl/src/string/wcsncpy.c',
+    'system/lib/libc/musl/src/string/wcsnlen.c',
+    'system/lib/libc/musl/src/string/wcspbrk.c',
+    'system/lib/libc/musl/src/string/wcsrchr.c',
+    'system/lib/libc/musl/src/string/wcsspn.c',
+    'system/lib/libc/musl/src/string/wcsstr.c',
+    'system/lib/libc/musl/src/string/wcstok.c',
+    'system/lib/libc/musl/src/string/wcswcs.c',
+    'system/lib/libc/musl/src/string/wmemchr.c',
+    'system/lib/libc/musl/src/string/wmemcmp.c',
     'system/lib/libc/musl/src/string/wmemcpy.c',
+    'system/lib/libc/musl/src/string/wmemmove.c',
+    'system/lib/libc/musl/src/string/wmemset.c',
+
+    'system/lib/libc/musl/src/math/__cos.c',
+    'system/lib/libc/musl/src/math/__cosdf.c',
+    'system/lib/libc/musl/src/math/__sin.c',
+    'system/lib/libc/musl/src/math/__sindf.c',
+    'system/lib/libc/musl/src/math/frexp.c',
+    'system/lib/libc/musl/src/math/frexpf.c',
+    'system/lib/libc/musl/src/math/frexpl.c',
+    'system/lib/libc/musl/src/math/ilogb.c',
+    'system/lib/libc/musl/src/math/ilogbf.c',
+    'system/lib/libc/musl/src/math/ilogbl.c',
+    'system/lib/libc/musl/src/math/ldexp.c',
+    'system/lib/libc/musl/src/math/ldexpf.c',
+    'system/lib/libc/musl/src/math/ldexpl.c',
+    'system/lib/libc/musl/src/math/lgamma.c',
+    'system/lib/libc/musl/src/math/lgamma_r.c',
+    'system/lib/libc/musl/src/math/lgammaf.c',
+    'system/lib/libc/musl/src/math/lgammaf_r.c',
+    'system/lib/libc/musl/src/math/lgammal.c',
+    'system/lib/libc/musl/src/math/logb.c',
+    'system/lib/libc/musl/src/math/logbf.c',
+    'system/lib/libc/musl/src/math/logbl.c',
+    'system/lib/libc/musl/src/math/scalbn.c',
+    'system/lib/libc/musl/src/math/scalbnf.c',
+    'system/lib/libc/musl/src/math/scalbnl.c',
+    'system/lib/libc/musl/src/math/signgam.c',
+    'system/lib/libc/musl/src/math/tgamma.c',
+    'system/lib/libc/musl/src/math/tgammaf.c',
+    'system/lib/libc/musl/src/math/tgammal.c',
 ]
 
 LIBCXX_SOURCES = [os.path.join('system/lib/libcxx', x) for x in [
@@ -185,13 +319,14 @@ LIBCXX_SOURCES = [os.path.join('system/lib/libcxx', x) for x in [
     'strstream.cpp',
     'system_error.cpp',
     #'thread.cpp',
-    'typeinfo.cpp',
+    #'typeinfo.cpp',
     'utility.cpp',
     'valarray.cpp',
 ]]
 
 LIBCXXABI_SOURCES = [os.path.join('system/lib/libcxxabi/src', x) for x in [
-    'private_typeinfo.cpp'
+    'private_typeinfo.cpp',
+    'typeinfo.cpp'
 ]]
 
 # MAJOR HACK ALERT
@@ -233,6 +368,7 @@ def build_libcxx(env):
     env = env.Clone()
     env['CXXFLAGS'] = filter(lambda e: e not in ('-Werror', '-Wall'), env['CXXFLAGS'])
     env['CCFLAGS'] = filter(lambda e: e not in ('-Werror', '-Wall'), env['CCFLAGS'])
+    env['CCFLAGS'] = env['CCFLAGS'] + ['-isystem${EMSCRIPTEN_HOME}/system/lib/libc/musl/src/internal/']
 
     objs = [
         env.Object(
@@ -248,16 +384,10 @@ def build_libcxx(env):
 def generate(env):
     env.SetDefault(
         PYTHON=sys.executable,
-        NODEJS='node',
-        JS_ENGINE='$NODEJS',
-        EMSCRIPTEN_FLAGS=['-v', '-j', '--suppressUsageWarning'],
+        EMSCRIPTEN_FLAGS=[],
         EMSCRIPTEN_TEMP_DIR=env.Dir('#/emscripten.tmp'),
-        _expand_settings_flags=_expand_settings_flags,
         EMSCRIPTEN_PREJS=[],
         EMSCRIPTEN_POSTJS=[],
-        EMSCRIPTEN_SETTINGS={},
-        _EMSCRIPTEN_SETTINGS_FLAGS='${_expand_settings_flags(EMSCRIPTEN_SETTINGS, __env__)}',
-        JS_OPTIMIZER_PASSES=[],
         LLVM_OPT_PASSES=['-std-compile-opts', '-std-link-opts'],
 
         EMSCRIPTEN_HOME=env.Dir(os.path.join(os.path.dirname(__file__), '..')),
@@ -274,7 +404,6 @@ def generate(env):
         RANLIBCOM='',
         CCFLAGS=[
             '-U__STRICT_ANSI__',
-            '-DNDEBUG',
             '-target', 'le32-unknown-nacl',
             '-nostdinc',
             '-Wno-#warnings',
@@ -287,10 +416,9 @@ def generate(env):
             '-Xclang', '-nostdinc++',
             '-Xclang', '-nobuiltininc',
             '-Xclang', '-nostdsysteminc',
-            '-Xclang', '-isystem$EMSCRIPTEN_HOME/system/include',
+            '-Xclang', '-isystem$EMSCRIPTEN_HOME/system/include/compat',
             '-Xclang', '-isystem$EMSCRIPTEN_HOME/system/include/libc',
             '-Xclang', '-isystem$EMSCRIPTEN_HOME/system/include/libcxx',
-            '-Xclang', '-isystem$EMSCRIPTEN_HOME/system/include/bsd',
             '-emit-llvm'],
         CXXFLAGS=['-std=c++11', '-fno-exceptions'],
     )
@@ -308,11 +436,7 @@ def generate(env):
     )
 
     env['BUILDERS']['Emscripten'] = Builder(
-        action='$PYTHON ${EMSCRIPTEN_HOME}/emscripten.py $EMSCRIPTEN_FLAGS $_EMSCRIPTEN_SETTINGS_FLAGS --temp-dir=$EMSCRIPTEN_TEMP_DIR --compiler $JS_ENGINE --relooper=third-party/relooper.js $SOURCE > $TARGET',
-        target_scanner=EmscriptenScanner)
-
-    env['BUILDERS']['JSOptimizer'] = Builder(
-        action='$JS_ENGINE ${EMSCRIPTEN_HOME}/tools/js-optimizer.js $SOURCE $JS_OPTIMIZER_PASSES > $TARGET',
+        action='$PYTHON ${EMSCRIPTEN_HOME}/emcc ${EMSCRIPTEN_FLAGS} $SOURCE -o $TARGET',
         target_scanner=EmscriptenScanner)
 
     def depend_on_embedder(target, source, env):

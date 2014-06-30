@@ -1,11 +1,15 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 static void create_file(const char *path, const char *buffer, int mode) {
   int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, mode);
@@ -18,6 +22,15 @@ static void create_file(const char *path, const char *buffer, int mode) {
 }
 
 void setup() {
+  mkdir("working", 0777);
+#ifdef __EMSCRIPTEN__
+  EM_ASM(
+#if NODEFS
+    FS.mount(NODEFS, { root: '.' }, 'working');
+#endif
+  );
+#endif
+  chdir("working");
   create_file("file", "test", 0777);
   create_file("file1", "test", 0777);
   symlink("file1", "file1-link");

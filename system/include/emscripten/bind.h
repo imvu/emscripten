@@ -422,8 +422,8 @@ namespace emscripten {
 
     namespace internal {
         template<typename ClassType, typename... Args>
-        ClassType* operator_new(Args... args) {
-            return new ClassType(args...);
+        ClassType* operator_new(Args&&... args) {
+            return new ClassType(std::forward<Args>(args)...);
         }
 
         template<typename WrapperType, typename ClassType, typename... Args>
@@ -945,15 +945,6 @@ namespace emscripten {
         template<typename ReturnType, typename... Args>
         ReturnType call(const char* name, Args&&... args) const {
             return wrapped.call<ReturnType>(name, std::forward<Args>(args)...);
-        }
-
-        template<typename ReturnType, typename... Args, typename Default>
-        ReturnType optional_call(const char* name, Default def, Args&&... args) const {
-            if (wrapped.has_implementation_defined_function<T>(name)) {
-                return call<ReturnType>(name, std::forward<Args>(args)...);
-            } else {
-                return def();
-            }
         }
 
     private:

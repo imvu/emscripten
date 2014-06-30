@@ -27,6 +27,7 @@ REDISTRIBUTION OF THIS SOFTWARE.
 #include "SDL/SDL_opengl.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
@@ -142,7 +143,7 @@ int main(int argc, char *argv[])
 
     SDL_GL_SwapBuffers();
 
-#if !EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
     // Wait for 3 seconds to give us a chance to see the image
     SDL_Delay(1500);
 #endif

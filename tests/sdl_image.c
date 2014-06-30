@@ -3,6 +3,8 @@
 #include <SDL/SDL_image.h>
 #include <assert.h>
 #include <emscripten.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 int testImage(SDL_Surface* screen, const char* fileName) {
   SDL_Surface *image = IMG_Load(fileName);
@@ -17,7 +19,16 @@ int testImage(SDL_Surface* screen, const char* fileName) {
   int result = image->w;
 
   SDL_BlitSurface (image, NULL, screen, NULL);
+
+  int w, h;
+  char *data = emscripten_get_preloaded_image_data(fileName, &w, &h);
+
+  assert(data);
+  assert(w == image->w);
+  assert(h == image->h);
+
   SDL_FreeSurface (image);
+  free(data);
 
   return result;
 }
@@ -27,9 +38,12 @@ int main() {
   SDL_Surface *screen = SDL_SetVideoMode(600, 450, 32, SDL_SWSURFACE);
 
   int result = 0;
-  result = testImage(screen, "screenshot.jpg"); // relative path
+
+  result |= testImage(screen, SCREENSHOT_DIRNAME "/" SCREENSHOT_BASENAME); // absolute path
   assert(result != 0);
-  result |= testImage(screen, "/screenshot.jpg"); // absolute path
+
+  chdir(SCREENSHOT_DIRNAME);
+  result = testImage(screen, "./" SCREENSHOT_BASENAME); // relative path
   assert(result != 0);
 
   SDL_Flip(screen);

@@ -12,7 +12,7 @@ RESULTING FROM THE USE, MODIFICATION, OR
 REDISTRIBUTION OF THIS SOFTWARE.
 */
 
-#if !EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
 #define USE_GLEW 1
 #endif
 
@@ -26,6 +26,7 @@ REDISTRIBUTION OF THIS SOFTWARE.
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
@@ -37,7 +38,7 @@ void verify() {
   for (int x = 0; x < width*height*4; x++) {
     if (x % 4 != 3) sum += x * data[x];
   }
-#if EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
   int result = sum;
   REPORT_RESULT();
 #endif
@@ -119,7 +120,7 @@ int main(int argc, char *argv[])
 
     verify();
 
-#if !EMSCRIPTEN
+#ifndef __EMSCRIPTEN__
     SDL_Delay(1500);
 #endif
 

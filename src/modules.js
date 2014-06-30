@@ -18,8 +18,10 @@ var LLVM = {
   PHI_REACHERS: set('branch', 'switch', 'invoke', 'indirectbr'),
   EXTENDS: set('sext', 'zext'),
   COMPS: set('icmp', 'fcmp'),
-  CONVERSIONS: set('inttoptr', 'ptrtoint', 'uitofp', 'sitofp', 'fptosi', 'fptoui'),
+  CONVERSIONS: set('inttoptr', 'ptrtoint', 'uitofp', 'sitofp', 'fptosi', 'fptoui', 'fpext', 'fptrunc'),
   INTRINSICS_32: set('_llvm_memcpy_p0i8_p0i8_i64', '_llvm_memmove_p0i8_p0i8_i64', '_llvm_memset_p0i8_i64'), // intrinsics that need args converted to i32 in USE_TYPED_ARRAYS == 2
+  MATHOP_IGNORABLES: set('exact', 'nnan', 'ninf', 'nsz', 'arcp', 'fast'),
+  PARAM_IGNORABLES: set('nocapture', 'readonly', 'readnone'),
 };
 LLVM.GLOBAL_MODIFIERS = set(keys(LLVM.LINKAGES).concat(['constant', 'global', 'hidden']));
 
@@ -46,7 +48,9 @@ var Debugging = {
     var form3ab = new RegExp(/^!(\d+) = metadata !{i32 \d+, (?:metadata !\d+|i32 \d+|null), metadata !(\d+).*$/);
     var form3ac = new RegExp(/^!(\d+) = metadata !{i32 \d+, (?:metadata !\d+|null), metadata !"[^"]*", metadata !(\d+)[^\[]*.*$/);
     var form3ad = new RegExp(/^!(\d+) = metadata !{i32 \d+, (?:i32 \d+|null), (?:i32 \d+|null), metadata !"[^"]*", metadata !"[^"]*", metadata !"[^"]*", metadata !(\d+),.*$/);
-    var form3b = new RegExp(/^!(\d+) = metadata !{i32 \d+, metadata !"([^"]+)", metadata !"([^"]*)", (metadata !\d+|null)}.*$/);
+    var form3ae = new RegExp(/^!(\d+) = metadata !{i32 \d+, metadata !(\d+).*$/);
+    // LLVM 3.3 drops the first and last parameters.
+    var form3b = new RegExp(/^!(\d+) = metadata !{(?:i32 \d+, )?metadata !"([^"]+)", metadata !"([^"]*)"(?:, (metadata !\d+|null))?}.*$/);
     var form3c = new RegExp(/^!(\d+) = metadata !{\w+\d* !?(\d+)[^\d].*$/);
     var form4 = new RegExp(/^!llvm.dbg.[\w\.]+ = .*$/);
     var form5 = new RegExp(/^!(\d+) = metadata !{.*$/);
@@ -75,7 +79,7 @@ var Debugging = {
         lines[i] = ';'; // return an empty line, to keep line numbers of subsequent lines the same
         continue;
       }
-      calc = form3a.exec(line) || form3ab.exec(line) || form3ac.exec(line) || form3ad.exec(line);
+      calc = form3a.exec(line) || form3ab.exec(line) || form3ac.exec(line) || form3ad.exec(line) || form3ae.exec(line);
       if (calc) {
         metadataToParentMetadata[calc[1]] = calc[2];
         lines[i] = ';';
@@ -225,12 +229,16 @@ var Types = {
 
   needAnalysis: {}, // Types noticed during parsing, that need analysis
 
+  hasInlineJS: false, // whether the program has inline JS anywhere
+
+  usesSIMD: false,
+
   // Set to true if we actually use precise i64 math: If PRECISE_I64_MATH is set, and also such math is actually
   // needed (+,-,*,/,% - we do not need it for bitops), or PRECISE_I64_MATH is 2 (forced)
   preciseI64MathUsed: (PRECISE_I64_MATH == 2)
 };
 
-var firstTableIndex = (ASM_JS ? 2*RESERVED_FUNCTION_POINTERS : 0) + 2;
+var firstTableIndex = FUNCTION_POINTER_ALIGNMENT * ((ASM_JS ? RESERVED_FUNCTION_POINTERS : 0) + 1);
 
 var Functions = {
   // All functions that will be implemented in this file. Maps id to signature
@@ -247,50 +255,56 @@ var Functions = {
 
   aliases: {}, // in shared modules (MAIN_MODULE or SHARED_MODULE), a list of aliases for functions that have them
 
+  getSignatureLetter: function(type) {
+    switch(type) {
+      case 'float': return 'f';
+      case 'double': return 'd';
+      case 'void': return 'v';
+      default: return 'i';
+    }
+  },
+
+  getSignatureType: function(letter) {
+    switch(letter) {
+      case 'v': return 'void';
+      case 'i': return 'i32';
+      case 'f': return 'float';
+      case 'd': return 'double';
+      default: throw 'what is this sig? ' + sig;
+    }
+  },
+
   getSignature: function(returnType, argTypes, hasVarArgs) {
-    var sig = returnType == 'void' ? 'v' : (isIntImplemented(returnType) ? 'i' : 'f');
+    var sig = Functions.getSignatureLetter(returnType);
     for (var i = 0; i < argTypes.length; i++) {
       var type = argTypes[i];
       if (!type) break; // varargs
       if (type in Runtime.FLOAT_TYPES) {
-        sig += 'f';
+        sig += Functions.getSignatureLetter(type);
       } else {
         var chunks = getNumIntChunks(type);
-        for (var j = 0; j < chunks; j++) sig += 'i';
+        if (chunks > 0) {
+          for (var j = 0; j < chunks; j++) sig += 'i';
+        } else if (type !== '...') {
+          // some special type like a SIMD vector (anything but varargs, which we handle below)
+          sig += Functions.getSignatureLetter(type);
+        }
       }
     }
     if (hasVarArgs) sig += 'i';
     return sig;
   },
 
-  getSignatureReturnType: function(sig) {
-    switch(sig[0]) {
-      case 'v': return 'void';
-      case 'i': return 'i32';
-      case 'f': return 'double';
-      default: throw 'what is this sig? ' + sig;
-    }
-  },
-
   // Mark a function as needing indexing. Python will coordinate them all
-  getIndex: function(ident, doNotCreate, sig) {
-    if (doNotCreate && !(ident in this.indexedFunctions)) {
-      if (!Functions.getIndex.tentative) Functions.getIndex.tentative = {}; // only used by GL emulation; TODO: generalize when needed
-      Functions.getIndex.tentative[ident] = 0;
-    }
+  getIndex: function(ident, sig) {
     var ret;
     if (phase != 'post' && singlePhase) {
-      if (!doNotCreate) this.indexedFunctions[ident] = 0; // tell python we need this indexized
       ret = "'{{ FI_" + toNiceIdent(ident) + " }}'"; // something python will replace later
+      this.indexedFunctions[ident] = 0;
     } else {
       if (!singlePhase) return 'NO_INDEX'; // Should not index functions in post
       ret = this.indexedFunctions[ident];
-      if (!ret) {
-        if (doNotCreate) return '0';
-        ret = this.nextIndex;
-        this.nextIndex += 2; // Need to have indexes be even numbers, see |polymorph| test
-        this.indexedFunctions[ident] = ret;
-      }
+      assert(ret);
       ret = ret.toString();
     }
     if (SIDE_MODULE && sig) { // sig can be undefined for the GL library functions
@@ -324,7 +338,7 @@ var Functions = {
       tables[sig][index] = ident;
     }
     var generated = false;
-    var wrapped = {};
+    var wrapped = {}; // whether we wrapped a lib func
     var maxTable = 0;
     for (var t in tables) {
       if (t == 'pre') continue;
@@ -334,51 +348,42 @@ var Functions = {
         // Resolve multi-level aliases all the way down
         while (1) {
           var varData = Variables.globals[table[i]];
-          if (!(varData && varData.resolvedAlias && varData.resolvedAlias.indexOf('FUNCTION_TABLE_OFFSET') < 0)) break;
+          if (!(varData && varData.resolvedAlias && !/(FUNCTION_TABLE_OFFSET|F_BASE_)/.test(varData.resolvedAlias))) break;
           table[i] = table[+varData.resolvedAlias || eval(varData.resolvedAlias)]; // might need to eval to turn (6) into 6
         }
         // Resolve library aliases
         if (table[i]) {
           var libName = LibraryManager.getRootIdent(table[i].substr(1));
           if (libName && typeof libName == 'string') {
-            table[i] = (libName.indexOf('.') < 0 ? '_' : '') + libName;
+            table[i] = (libName.indexOf('Math_') < 0 ? '_' : '') + libName;
           }
         }
         if (ASM_JS) {
           var curr = table[i];
           if (curr && curr != '0' && !Functions.implementedFunctions[curr]) {
-            curr = toNiceIdent(curr); // fix Math.* to Math_*
+            var short = toNiceIdent(curr); // fix Math.* to Math_*
+            curr = t + '_' + short; // libfuncs can alias with different sigs, wrap each separately
             // This is a library function, we can't just put it in the function table, need a wrapper
             if (!wrapped[curr]) {
-              var args = '', arg_coercions = '', call = curr + '(', retPre = '', retPost = '';
+              var args = '', arg_coercions = '', call = short + '(', retPre = '', retPost = '';
               if (t[0] != 'v') {
-                if (t[0] == 'i') {
-                  retPre = 'return ';
-                  retPost = '|0';
-                } else {
-                  retPre = 'return +';
-                }
+                var temp = asmFFICoercion('X', Functions.getSignatureType(t[0])).split('X');
+                retPre = 'return ' + temp[0];
+                retPost = temp[1];
               }
               for (var j = 1; j < t.length; j++) {
                 args += (j > 1 ? ',' : '') + 'a' + j;
-                arg_coercions += 'a' + j + '=' + asmCoercion('a' + j, t[j] != 'i' ? 'float' : 'i32') + ';';
-                call += (j > 1 ? ',' : '') + asmCoercion('a' + j, t[j] != 'i' ? 'float' : 'i32');
+                var type = Functions.getSignatureType(t[j]);
+                arg_coercions += 'a' + j + '=' + asmCoercion('a' + j, type) + ';';
+                call += (j > 1 ? ',' : '') + asmCoercion('a' + j, type === 'float' ? 'double' : type); // ffi arguments must be doubles if they are floats
               }
               call += ')';
-              if (curr == '_setjmp') printErr('WARNING: setjmp used via a function pointer. If this is for libc setjmp (not something of your own with the same name), it will break things');
+              if (short == '_setjmp') printErr('WARNING: setjmp used via a function pointer. If this is for libc setjmp (not something of your own with the same name), it will break things');
               tables.pre += 'function ' + curr + '__wrapper(' + args + ') { ' + arg_coercions + ' ; ' + retPre + call + retPost + ' }\n';
               wrapped[curr] = 1;
             }
             table[i] = curr + '__wrapper';
           }
-        }
-      }
-      if (table.length > 20) {
-        // add some newlines in the table, for readability
-        var j = 10;
-        while (j+10 < table.length) {
-          table[j] += '\n';
-          j += 10;
         }
       }
       maxTable = Math.max(maxTable, table.length);
@@ -387,13 +392,11 @@ var Functions = {
     for (var t in tables) {
       if (t == 'pre') continue;
       var table = tables[t];
-      if (ASM_JS) {
-        // asm function table mask must be power of two
-        // if nonaliasing, then standardize function table size, to avoid aliasing pointers through the &M mask (in a small table using a big index)
-        var fullSize = ALIASING_FUNCTION_POINTERS ? ceilPowerOfTwo(table.length) : maxTable;
-        for (var i = table.length; i < fullSize; i++) {
-          table[i] = 0;
-        }
+      // asm function table mask must be power of two, and non-asm must be aligned
+      // if nonaliasing, then standardize function table size, to avoid aliasing pointers through the &M mask (in a small table using a big index)
+      var fullSize = ASM_JS ? (ALIASING_FUNCTION_POINTERS ? ceilPowerOfTwo(table.length) : maxTable) : ((table.length+FUNCTION_POINTER_ALIGNMENT-1)&-FUNCTION_POINTER_ALIGNMENT);
+      for (var i = table.length; i < fullSize; i++) {
+        table[i] = 0;
       }
       // finalize table
       var indices = table.toString().replace('"', '');
@@ -422,10 +425,68 @@ var LibraryManager = {
   load: function() {
     if (this.library) return;
 
-    var libraries = ['library.js', 'library_browser.js', 'library_sdl.js', 'library_gl.js', 'library_glut.js', 'library_xlib.js', 'library_egl.js', 'library_gc.js', 'library_jansson.js', 'library_openal.js', 'library_glfw.js'].concat(additionalLibraries);
+    var libraries = ['library.js', 'library_path.js', 'library_fs.js', 'library_idbfs.js', 'library_memfs.js', 'library_nodefs.js', 'library_sockfs.js', 'library_tty.js', 'library_browser.js', 'library_sdl.js', 'library_gl.js', 'library_glut.js', 'library_xlib.js', 'library_egl.js', 'library_gc.js', 'library_jansson.js', 'library_openal.js', 'library_glfw.js', 'library_uuid.js', 'library_glew.js', 'library_html5.js'].concat(additionalLibraries);
     for (var i = 0; i < libraries.length; i++) {
-      eval(processMacros(preprocess(read(libraries[i]))));
+      var filename = libraries[i];
+      var src = read(filename);
+      try {
+        var processed = processMacros(preprocess(src));
+        eval(processed);
+      } catch(e) {
+        var details = [e, e.lineNumber ? 'line number: ' + e.lineNumber : '', (e.stack || "").toString().replace('Object.<anonymous>', filename)];
+        if (processed) {
+          error('failure to execute js library "' + filename + '": ' + details + '\npreprocessed source (you can run a js engine on this to get a clearer error message sometimes):\n=============\n' + processed + '\n=============\n');
+        } else {
+          error('failure to process js library "' + filename + '": ' + details + '\noriginal source:\n=============\n' + src + '\n=============\n');
+        }
+        throw e;
+      }
     }
+
+    // apply synonyms. these are typically not speed-sensitive, and doing it this way makes it possible to not include hacks in the compiler
+    // (and makes it simpler to switch between SDL verisons, fastcomp and non-fastcomp, etc.).
+    var lib = LibraryManager.library;
+    libloop: for (var x in lib) {
+      if (x.lastIndexOf('__') > 0) continue; // ignore __deps, __*
+      if (lib[x + '__asm']) continue; // ignore asm library functions, those need to be fully optimized
+      if (typeof lib[x] === 'string') {
+        var target = x;
+        while (typeof lib[target] === 'string') {
+          if (lib[target].indexOf('(') >= 0) continue libloop;
+          target = lib[target];
+        }
+        if (typeof lib[target] === 'undefined' || typeof lib[target] === 'function') {
+          if (target.indexOf('Math_') < 0) {
+            lib[x] = new Function('return _' + target + '.apply(null, arguments)');
+            if (!lib[x + '__deps']) lib[x + '__deps'] = [];
+            lib[x + '__deps'].push(target);
+          } else {
+            lib[x] = new Function('return ' + target + '.apply(null, arguments)');
+          }
+          continue;
+        }
+      }
+    }
+
+    /*
+    // export code for CallHandlers.h
+    printErr('============================');
+    for (var x in this.library) {
+      var y = this.library[x];
+      if (typeof y === 'string' && x.indexOf('__sig') < 0 && x.indexOf('__postset') < 0 && y.indexOf(' ') < 0) {
+        printErr('DEF_REDIRECT_HANDLER(' + x + ', ' + y + ');');
+      }
+    }
+    printErr('============================');
+    for (var x in this.library) {
+      var y = this.library[x];
+      if (typeof y === 'string' && x.indexOf('__sig') < 0 && x.indexOf('__postset') < 0 && y.indexOf(' ') < 0) {
+        printErr('  SETUP_CALL_HANDLER(' + x + ');');
+      }
+    }
+    printErr('============================');
+    // end export code for CallHandlers.h
+    */
 
     this.loaded = true;
   },
@@ -445,6 +506,7 @@ var LibraryManager = {
   },
 
   isStubFunction: function(ident) {
+    if (SIDE_MODULE == 1) return false; // cannot eliminate these, as may be implement in the main module and imported by us
     var libCall = LibraryManager.library[ident.substr(1)];
     return typeof libCall === 'function' && libCall.toString().replace(/\s/g, '') === 'function(){}'
                                          && !(ident in Functions.implementedFunctions);
@@ -468,7 +530,11 @@ var PassManager = {
       }));
     } else if (phase == 'funcs') {
       print('\n//FORWARDED_DATA:' + JSON.stringify({
-        Types: { preciseI64MathUsed: Types.preciseI64MathUsed },
+        Types: {
+          hasInlineJS: Types.hasInlineJS,
+          usesSIMD: Types.usesSIMD,
+          preciseI64MathUsed: Types.preciseI64MathUsed
+        },
         Functions: {
           blockAddresses: Functions.blockAddresses,
           indexedFunctions: Functions.indexedFunctions,
@@ -480,6 +546,11 @@ var PassManager = {
     } else if (phase == 'post') {
       print('\n//FORWARDED_DATA:' + JSON.stringify({
         Functions: { tables: Functions.tables }
+      }));
+    } else if (phase == 'glue') {
+      print('\n//FORWARDED_DATA:' + JSON.stringify({
+        Functions: Functions,
+        EXPORTED_FUNCTIONS: EXPORTED_FUNCTIONS
       }));
     }
   },
@@ -494,6 +565,7 @@ var PassManager = {
     for (var i in data.Functions) {
       Functions[i] = data.Functions[i];
     }
+    EXPORTED_FUNCTIONS = data.EXPORTED_FUNCTIONS;
     /*
     print('\n//LOADED_DATA:' + phase + ':' + JSON.stringify({
       Types: Types,
@@ -502,5 +574,9 @@ var PassManager = {
     }));
     */
   }
+};
+
+var Framework = {
+  currItem: null
 };
 
