@@ -1230,9 +1230,20 @@ RegisteredPointer.prototype['fromWireType'] = function fromWireType(ptr) {
         }
     }
 
+    function makeClassHandle(prototype, record) {
+        return Object.create(prototype, {
+            $$: {
+                value: record,
+            },
+        });
+    }
+
     function makeDefaultHandle() {
         if (this.isSmartPointer) {
             return makeClassHandle(this.registeredClass.instancePrototype, {
+                count: { value: 1 },
+                deleteScheduled: false,
+                preservePointerOnDelete: false,
                 ptrType: this.pointeeType,
                 ptr: rawPointer,
                 smartPtrType: this,
@@ -1240,8 +1251,13 @@ RegisteredPointer.prototype['fromWireType'] = function fromWireType(ptr) {
             });
         } else {
             return makeClassHandle(this.registeredClass.instancePrototype, {
+                count: { value: 1 },
+                deleteScheduled: false,
+                preservePointerOnDelete: false,
                 ptrType: this,
                 ptr: ptr,
+                smartPtrType: undefined,
+                smartPtr: undefined,
             });
         }
     }
@@ -1267,35 +1283,26 @@ RegisteredPointer.prototype['fromWireType'] = function fromWireType(ptr) {
     }
     if (this.isSmartPointer) {
         return makeClassHandle(toType.registeredClass.instancePrototype, {
-            ptrType: toType,
+            count: { value: 1 },
+            deleteScheduled: false,
+            preservePointerOnDelete: false,
             ptr: dp,
-            smartPtrType: this,
+            ptrType: toType,
             smartPtr: ptr,
+            smartPtrType: this,
         });
     } else {
         return makeClassHandle(toType.registeredClass.instancePrototype, {
+            count: { value: 1 },
+            deleteScheduled: false,
+            preservePointerOnDelete: false,
             ptrType: toType,
             ptr: dp,
+            smartPtr: undefined,
+            smartPtrType: undefined,
         });
     }
 };
-
-function makeClassHandle(prototype, record) {
-    if (!record.ptrType || !record.ptr) {
-        throwInternalError('makeClassHandle requires ptr and ptrType');
-    }
-    var hasSmartPtrType = !!record.smartPtrType;
-    var hasSmartPtr = !!record.smartPtr;
-    if (hasSmartPtrType !== hasSmartPtr) {
-        throwInternalError('Both smartPtrType and smartPtr must be specified');
-    }
-    record.count = { value: 1 };
-    return Object.create(prototype, {
-        $$: {
-            value: record,
-        },
-    });
-}
 
 // root of all pointer and smart pointer handles in embind
 function ClassHandle() {
