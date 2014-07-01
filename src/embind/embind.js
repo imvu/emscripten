@@ -1335,6 +1335,18 @@ function throwInstanceAlreadyDeleted(obj) {
     throwBindingError(getInstanceTypeName(obj) + ' instance already deleted');
 }
 
+function shallowCopyInternalPointer(o) {
+    return {
+        count: o.count,
+        deleteScheduled: o.deleteScheduled,
+        preservePointerOnDelete: o.preservePointerOnDelete,
+        ptr: o.ptr,
+        ptrType: o.ptrType,
+        smartPtr: o.smartPtr,
+        smartPtrType: o.smartPtrType,
+    };
+}
+
 ClassHandle.prototype['clone'] = function clone() {
     if (!this.$$.ptr) {
         throwInstanceAlreadyDeleted(this);
@@ -1346,7 +1358,7 @@ ClassHandle.prototype['clone'] = function clone() {
     } else {
         var clone = Object.create(Object.getPrototypeOf(this), {
             $$: {
-                value: shallowCopy(this.$$),
+                value: shallowCopyInternalPointer(this.$$),
             }
         });
 
@@ -1441,16 +1453,6 @@ function RegisteredClass(
     this.upcast = upcast;
     this.downcast = downcast;
     this.pureVirtualFunctions = [];
-}
-
-function shallowCopy(o) {
-    var rv = {};
-    for (var k in o) {
-        if (Object.prototype.hasOwnProperty.call(o, k)) {
-            rv[k] = o[k];
-        }
-    }
-    return rv;
 }
 
 function __embind_register_class(
