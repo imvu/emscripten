@@ -323,6 +323,27 @@ def gen_inspect_code(path, struct, code):
   
   c_ascent(code)
 
+# https://gist.github.com/edufelipe/1027906
+def check_output(*popenargs, **kwargs):
+  r"""Run command with arguments and return its output as a byte string.
+ 
+  Backported from Python 2.7 as it's implemented as pure python on stdlib.
+ 
+  >>> check_output(['/usr/bin/python', '--version'])
+  Python 2.6.2
+  """
+  process = subprocess.Popen(stdout=subprocess.PIPE, *popenargs, **kwargs)
+  output, unused_err = process.communicate()
+  retcode = process.poll()
+  if retcode:
+    cmd = kwargs.get("args")
+    if cmd is None:
+      cmd = popenargs[0]
+    error = subprocess.CalledProcessError(retcode, cmd)
+    error.output = output
+    raise error
+  return output
+
 def inspect_code(headers, cpp_opts, structs, defines):
   show('Generating C code...')
   
@@ -377,7 +398,7 @@ def inspect_code(headers, cpp_opts, structs, defines):
     
     # Run the compiled program.
     show('Calling generated program...')
-    info = subprocess.check_output([shared.LLVM_INTERPRETER, bin_file[1]]).splitlines()
+    info = check_output([shared.LLVM_INTERPRETER, bin_file[1]]).splitlines()
   except subprocess.CalledProcessError:
     if os.path.isfile(bin_file[1]):
       sys.stderr.write('FAIL: Running the generated program failed!\n')
