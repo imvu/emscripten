@@ -641,7 +641,7 @@ except:
 try:
   PYTHON
 except:
-  logging.debug('PYTHON not defined in ~/.emscripten, using "python"')
+  logging.debug('PYTHON not defined in ~/.emscripten, using "%s"' % (sys.executable,))
   PYTHON = sys.executable
 
 try:

@@ -450,7 +450,7 @@ def generate(env):
     )
 
     env['BUILDERS']['Emscripten'] = Builder(
-        action='$PYTHON ${EMSCRIPTEN_HOME}/emcc ${EMSCRIPTEN_FLAGS} $SOURCE -o $TARGET',
+        action='$PYTHON -u ${EMSCRIPTEN_HOME}/emcc ${EMSCRIPTEN_FLAGS} $SOURCE -o $TARGET',
         target_scanner=EmscriptenScanner)
 
     def depend_on_embedder(target, source, env):
