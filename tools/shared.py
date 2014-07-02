@@ -641,7 +641,7 @@ try:
   PYTHON
 except:
   logging.debug('PYTHON not defined in ~/.emscripten, using "python"')
-  PYTHON = 'python'
+  PYTHON = sys.executable
 
 try:
   JAVA
