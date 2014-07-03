@@ -1486,7 +1486,7 @@ try:
       if shared.Settings.ASM_JS and opt_level >= 3:
         js_optimizer_queue += ['registerizeHarder']
       else:
-        js_optimizer_queue += ['registerize']
+        js_optimizer_queue += []#['registerize']
 
     if shared.Settings.POINTER_MASKING and shared.Settings.ASM_JS: js_optimizer_queue += ['pointerMasking']
 
