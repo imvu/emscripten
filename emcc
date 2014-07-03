@@ -1787,7 +1787,7 @@ try:
       if shared.Settings.ASM_JS and opt_level >= 3:
         js_optimizer_queue += ['registerizeHarder']
       else:
-        js_optimizer_queue += []#['registerize']
+        js_optimizer_queue += ['registerize']
 
     if opt_level >= 2:
       if debug_level < 2 and shared.Settings.ASM_JS:
