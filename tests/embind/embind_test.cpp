@@ -1244,18 +1244,26 @@ void passVal(AbstractClass& ac, val v) {
     return ac.passVal(v);
 }
 
+// work around a clang 3.2 bug for now
+std::string defaultOptionalMethod(AbstractClass& this_, const std::string& s) {
+    return this_.AbstractClass::optionalMethod(s);
+}
+
 EMSCRIPTEN_BINDINGS(interface_tests) {
     class_<AbstractClass>("AbstractClass")
         .smart_ptr<std::shared_ptr<AbstractClass>>("shared_ptr<AbstractClass>")
         .allow_subclass<AbstractClassWrapper>("AbstractClassWrapper")
         .function("abstractMethod", &AbstractClass::abstractMethod, pure_virtual())
+        /* work around a clang 3.2 bug for now
+           bring this back when we upgrade to clang 3.3 or higher
         // The optional_override is necessary because, otherwise, the C++ compiler
         // cannot deduce the signature of the lambda function.
         .function("optionalMethod", optional_override(
             [](AbstractClass& this_, const std::string& s) {
                 return this_.AbstractClass::optionalMethod(s);
             }
-        ))
+        ))*/
+        .function("optionalMethod", defaultOptionalMethod)
         .function("concreteMethod", &AbstractClass::concreteMethod)
         .function("passShared", select_overload<void(AbstractClass&, const std::shared_ptr<Derived>&)>([](AbstractClass& self, const std::shared_ptr<Derived>& derived) {
             self.AbstractClass::passShared(derived);
