@@ -1346,7 +1346,7 @@ ClassHandle.prototype['clone'] = function clone() {
     } else {
         var clone = Object.create(Object.getPrototypeOf(this), {
             $$: {
-                value: shallowCopy(this.$$),
+                value: shallowCopyInternalPointer(this.$$),
             }
         });
 
@@ -1443,14 +1443,16 @@ function RegisteredClass(
     this.pureVirtualFunctions = [];
 }
 
-function shallowCopy(o) {
-    var rv = {};
-    for (var k in o) {
-        if (Object.prototype.hasOwnProperty.call(o, k)) {
-            rv[k] = o[k];
-        }
-    }
-    return rv;
+function shallowCopyInternalPointer(o) {
+    return {
+        count: o.count,
+        deleteScheduled: o.deleteScheduled,
+        preservePointerOnDelete: o.preservePointerOnDelete,
+        ptr: o.ptr,
+        ptrType: o.ptrType,
+        smartPtr: o.smartPtr,
+        smartPtrType: o.smartPtrType,
+    };
 }
 
 function __embind_register_class(
