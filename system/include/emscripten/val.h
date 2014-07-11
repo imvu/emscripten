@@ -66,11 +66,6 @@ namespace emscripten {
                 EM_VAR_ARGS argv);
             EM_VAL _emval_typeof(EM_VAL value);
         }
-    }
-
-    class val;
-
-    namespace internal {
 
         template<const char* address> 
         struct symbol_registrar {
@@ -199,8 +194,6 @@ namespace emscripten {
             writeGenericWireType(cursor, BindingType<First>::toWireType(std::forward<First>(first)));
             writeGenericWireTypes(cursor, std::forward<Rest>(rest)...);
         }
-
-        inline void writeGenericWireType(GenericWireType*& cursor, const val& v);
 
         template<typename... Args>
         struct WireTypePack {
@@ -429,16 +422,10 @@ namespace emscripten {
 
         internal::EM_VAL handle;
 
-        friend void internal::writeGenericWireType(internal::GenericWireType*&, const val&);
         friend struct internal::BindingType<val>;
     };
 
     namespace internal {
-        inline void writeGenericWireType(GenericWireType*& cursor, const val& v) {
-            cursor->w[0].p = v.handle;
-            ++cursor;
-        }
-
         template<>
         struct BindingType<val> {
             typedef internal::EM_VAL WireType;
