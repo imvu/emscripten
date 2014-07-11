@@ -12,7 +12,7 @@
 // -- jshint doesn't understand library syntax, so we need to specifically tell it about the symbols we define
 /*global typeDependencies, flushPendingDeletes, getTypeName, getBasestPointer, throwBindingError, UnboundTypeError, _embind_repr, registeredInstances, registeredTypes, getShiftFromSize*/
 /*global ensureOverloadTable, requireFunction, awaitingDependencies, makeLegalFunctionName, embind_charCodes:true, registerType, createNamedFunction, RegisteredPointer, throwInternalError*/
-/*global simpleReadValueFromPointer, floatReadValueFromPointer, integerReadValueFromPointer, replacePublicSymbol, craftInvokerFunction, tupleRegistrations*/
+/*global simpleReadValueFromPointer, floatReadValueFromPointer, integerReadValueFromPointer, enumReadValueFromPointer, replacePublicSymbol, craftInvokerFunction, tupleRegistrations*/
 /*global ClassHandle, makeClassHandle, structRegistrations, whenDependentTypesAreResolved, BindingError, deletionQueue, delayFunction:true, upcastPointer*/
 /*global exposePublicSymbol, heap32VectorToArray, new_, RegisteredPointer_getPointee, RegisteredPointer_destructor, RegisteredPointer_deleteObject, char_0, char_9*/
 /*global getInheritedInstanceCount, getLiveInheritedInstances, setDelayFunction, InternalError, runDestructors*/
