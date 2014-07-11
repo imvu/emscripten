@@ -283,8 +283,9 @@ var LibraryEmVal = {
         args.push(types[1 + i]);
     }
 
+    var functionName = makeLegalFunctionName("methodCaller_" + signatureName);
     var functionBody =
-        "return function " + makeLegalFunctionName(signatureName) + "(handle, name, destructors, args) {\n";
+        "return function " + functionName + "(handle, name, destructors, args) {\n";
 
     var offset = 0;
     for (var i = 0; i < argCount - 1; ++i) {
@@ -300,8 +301,11 @@ var LibraryEmVal = {
             "    argType" + i + ".deleteObject(arg" + i + ");\n";
         }
     }
+    if (!retType.isVoid) {
+        functionBody += 
+        "    return retType.toWireType(destructors, rv);\n";
+    }
     functionBody += 
-        "    return retType.toWireType(destructors, rv);\n" +
         "};\n";
 
     params.push(functionBody);
@@ -315,6 +319,14 @@ var LibraryEmVal = {
     handle = requireHandle(handle);
     methodName = getStringOrSymbol(methodName);
     return caller(handle, methodName, __emval_allocateDestructors(destructorsRef), args);
+  },
+
+  _emval_call_void_method__deps: ['_emval_allocateDestructors', '$getStringOrSymbol', '$emval_methodCallers', '$requireHandle'],
+  _emval_call_void_method: function(caller, handle, methodName, args) {
+    caller = emval_methodCallers[caller];
+    handle = requireHandle(handle);
+    methodName = getStringOrSymbol(methodName);
+    caller(handle, methodName, null, args);
   },
 
   _emval_typeof__deps: ['_emval_register', '$requireHandle'],
