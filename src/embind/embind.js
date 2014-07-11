@@ -690,7 +690,11 @@ var LibraryEmbind = {
             return __emval_register(value);
         },
         'argPackAdvance': 8,
-        'readValueFromPointer': simpleReadValueFromPointer,
+        'readValueFromPointer': function(pointer) {
+            var handle = HEAPU32[pointer >> 2];
+            return emval_handle_array[handle].value;
+        },
+
         destructorFunction: null, // This type does not need a destructor
 
         // TODO: do we need a deleteObject here?  write a test where
