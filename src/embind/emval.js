@@ -9,6 +9,7 @@
 // -- jshint doesn't understand library syntax, so we need to mark the symbols exposed here
 /*global getStringOrSymbol, emval_handle_array, __emval_register, __emval_unregister, requireHandle, count_emval_handles, emval_symbols, emval_free_list, get_first_emval, __emval_decref, emval_newers*/
 /*global craftEmvalAllocator, __emval_addMethodCaller, emval_methodCallers, LibraryManager, mergeInto, __emval_allocateDestructors, global, __emval_lookupTypes, makeLegalFunctionName*/
+/*global emval_get_global*/
 
 var LibraryEmVal = {
   $emval_handle_array: [{}], // reserve zero
