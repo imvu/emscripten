@@ -24,6 +24,8 @@ This section lists Emscripten's public API, organised by header file. At very hi
 
 - **bind.h**: *Embind APIs for* **HamishW**  - add description
 
+- **trace.h**: A tracing API for doing memory usage analysis.
+
 - **Advanced APIs**: *APIs for advanced users/core developers*
 
 	In addition to the public APIs listed above, there are additional APIs which are intended only when developing Emscripten itself, or which are complicated to use and hence considered suitable for "advanced users". At time of writing are not documented individually, but are mentioned at high level in :doc:`advanced-apis`.
@@ -39,6 +41,7 @@ This section lists Emscripten's public API, organised by header file. At very hi
    module
    val.h
    bind.h
+   trace.h
    advanced-apis
 
 
