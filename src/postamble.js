@@ -127,7 +127,7 @@ function run(args) {
     preMain();
 
     if (ENVIRONMENT_IS_WEB && preloadStartTime !== null) {
-      Module.printErr('pre-main prep time: ' + (Date.now() - preloadStartTime) + ' ms');
+      Module.print('pre-main prep time: ' + (Date.now() - preloadStartTime) + ' ms');
     }
 
     if (Module['_main'] && shouldRunNow) {
@@ -249,4 +249,3 @@ onmessage = function(msg) {
 }
 
 #endif
-
