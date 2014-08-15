@@ -6,6 +6,8 @@
 #define HAVE_MMAP 0
 /* we can only grow the heap up anyhow, so don't try to trim */
 #define MORECORE_CANNOT_TRIM 1
+/* XXX Emscripten Tracing API. */
+#include <emscripten/trace.h>
 #endif
 
 
@@ -4683,6 +4685,8 @@ void* dlmalloc(size_t bytes) {
         
     postaction:
         POSTACTION(gm);
+        /* XXX Emscripten Tracing API. */
+        emscripten_trace_record_allocation(mem, bytes);
         return mem;
     }
     
@@ -4699,6 +4703,8 @@ void dlfree(void* mem) {
      */
     
     if (mem != 0) {
+        /* XXX Emscripten Tracing API. */
+        emscripten_trace_record_free(mem);
         mchunkptr p  = mem2chunk(mem);
 #if FOOTERS
         mstate fm = get_mstate_for(p);
@@ -5235,6 +5241,8 @@ void* dlrealloc(void* oldmem, size_t bytes) {
                 }
             }
         }
+        /* XXX Emscripten Tracing API. */
+        emscripten_trace_record_reallocation(oldmem, mem, bytes);
     }
     return mem;
 }
