@@ -177,7 +177,7 @@ of the Emscripten tracing API.
 Running the Server
 ==================
 
-...
+For now, see ``tools/trace_collector/README.rst``.
 
 Design Notes
 ============
