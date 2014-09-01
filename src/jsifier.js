@@ -847,12 +847,12 @@ function JSify(data, functionsOnly) {
         func.JS += '\n//FUNCTION_END_MARKER_OF_SOURCE_FILE_' + associatedSourceFile + '\n';
     }
 
-    if (!ASM_JS && (EXPORT_ALL || (func.functionName in EXPORTED_FUNCTIONS))) {
-      func.JS += 'Module["' + func.functionName + '"] = ' + func.functionName + ';';
+    if (!ASM_JS && (EXPORT_ALL || (func.ident in EXPORTED_FUNCTIONS))) {
+      func.JS += 'Module["' + func.ident + '"] = ' + func.ident + ';';
     }
 
     if (!ASM_JS && INLINING_LIMIT && func.lines.length >= INLINING_LIMIT) {
-      func.JS += func.functionName + '["X"]=1;';
+      func.JS += func.ident + '["X"]=1;';
     }
 
     if (BUILD_AS_SHARED_LIB == 2) {
