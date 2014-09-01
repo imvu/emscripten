@@ -303,7 +303,7 @@ var LibraryEmVal = {
         }
     }
     if (!retType.isVoid) {
-        functionBody += 
+        functionBody +=
         "    return retType.toWireType(destructors, rv);\n";
     }
     functionBody += 
