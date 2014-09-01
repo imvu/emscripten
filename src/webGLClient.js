@@ -150,6 +150,14 @@ function WebGLClient() {
     ctx.uniform1f(objects[buffer[i]], buffer[i+1]);
     i += 2;
   }
+  function uniform2fv() {
+    ctx.uniform2fv(objects[buffer[i]], buffer[i+1]);
+    i += 2;
+  }
+  function uniform3f() {
+    ctx.uniform3f(objects[buffer[i]], buffer[i+1], buffer[i+2], buffer[i+3]);
+    i += 4;
+  }
   function uniform3fv() {
     ctx.uniform3fv(objects[buffer[i]], buffer[i+1]);
     i += 2;
@@ -233,6 +241,14 @@ function WebGLClient() {
     66: { name: 'blendEquation', func: func1 },
     67: { name: 'generateMipmap', func: func1 },
     68: { name: 'uniformMatrix3fv', func: func3L0 },
+    69: { name: 'stencilMask', func: func1 },
+    70: { name: 'clearStencil', func: func1 },
+    71: { name: 'texSubImage2D', func: func9 },
+    72: { name: 'uniform3f', func: uniform3f },
+    73: { name: 'blendFuncSeparate', func: func4 },
+    74: { name: 'uniform2fv', func: uniform2fv },
+    75: { name: 'texParameterf', func: func3 },
+    76: { name: 'isContextLost', func: function() { assert(!ctx.isContextLost(), 'context lost which we cannot handle, we are async proxied WebGL') } },
   };
 
   function renderCommands(buf) {
@@ -290,7 +306,7 @@ WebGLClient.prefetch = function() {
 
   // Fetch the parameters and proxy them
   var parameters = {};
-  ['MAX_VERTEX_ATTRIBS', 'MAX_TEXTURE_IMAGE_UNITS', 'MAX_TEXTURE_SIZE', 'MAX_CUBE_MAP_TEXTURE_SIZE', 'MAX_VERTEX_UNIFORM_VECTORS', 'MAX_FRAGMENT_UNIFORM_VECTORS', 'MAX_VARYING_VECTORS', 'MAX_COMBINED_TEXTURE_IMAGE_UNITS', 'MAX_VERTEX_TEXTURE_IMAGE_UNITS', 'VENDOR', 'RENDERER', 'VERSION', 'SHADING_LANGUAGE_VERSION'].forEach(function(name) {
+  ['MAX_VERTEX_ATTRIBS', 'MAX_TEXTURE_IMAGE_UNITS', 'MAX_TEXTURE_SIZE', 'MAX_CUBE_MAP_TEXTURE_SIZE', 'MAX_VERTEX_UNIFORM_VECTORS', 'MAX_FRAGMENT_UNIFORM_VECTORS', 'MAX_VARYING_VECTORS', 'MAX_COMBINED_TEXTURE_IMAGE_UNITS', 'MAX_VERTEX_TEXTURE_IMAGE_UNITS', 'VENDOR', 'RENDERER', 'VERSION', 'SHADING_LANGUAGE_VERSION', 'COMPRESSED_TEXTURE_FORMATS'].forEach(function(name) {
     var id = ctx[name];
     parameters[id] = ctx.getParameter(id);
   });
@@ -314,6 +330,6 @@ WebGLClient.prefetch = function() {
     });
   });
 
-  worker.postMessage({ target: 'gl', op: 'setPrefetched', parameters: parameters, extensions: ctx.getSupportedExtensions(), precisions: precisions });
+  worker.postMessage({ target: 'gl', op: 'setPrefetched', parameters: parameters, extensions: ctx.getSupportedExtensions(), precisions: precisions, preMain: true });
 };
 

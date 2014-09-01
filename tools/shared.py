@@ -216,9 +216,6 @@ else:
     config_file = config_file.replace('\'{{{ LLVM_ROOT }}}\'', repr(llvm_root))
     node = find_executable('node') or find_executable('nodejs') or 'node'
     config_file = config_file.replace('\'{{{ NODE }}}\'', repr(node))
-    python = find_executable('python2') or find_executable('python') or \
-        sys.executable or 'python'
-    config_file = config_file.replace('\'{{{ PYTHON }}}\'', repr(python))
     if WINDOWS:
       tempdir = os.environ.get('TEMP') or os.environ.get('TMP') or 'c:\\temp'
     else:
@@ -238,7 +235,6 @@ A settings file has been copied to %s, at absolute path: %s
 It contains our best guesses for the important paths, which are:
 
   LLVM_ROOT       = %s
-  PYTHON          = %s
   NODE_JS         = %s
   EMSCRIPTEN_ROOT = %s
 
@@ -246,7 +242,7 @@ Please edit the file if any of those are incorrect.
 
 This command will now exit. When you are done editing those paths, re-run it.
 ==============================================================================
-''' % (EM_CONFIG, CONFIG_FILE, llvm_root, python, node, __rootpath__)
+''' % (EM_CONFIG, CONFIG_FILE, llvm_root, node, __rootpath__)
     sys.exit(0)
 try:
   config_text = open(CONFIG_FILE, 'r').read() if CONFIG_FILE else EM_CONFIG
@@ -277,7 +273,8 @@ actual_clang_version = None
 def get_clang_version():
   global actual_clang_version
   if actual_clang_version is None:
-    actual_clang_version = Popen([CLANG, '-v'], stderr=PIPE).communicate()[1].split('\n')[0].split(' ')[2]
+    ver = Popen([CLANG, '-v'], stderr=PIPE).communicate()[1].split('\n')[0].split(' ')
+    actual_clang_version = ver[ver.index('version')+1]
   return actual_clang_version
 
 def check_clang_version():
@@ -370,6 +367,17 @@ def find_temp_directory():
 
 try:
   EMSCRIPTEN_VERSION = open(path_from_root('emscripten-version.txt')).read().strip()
+  try:
+    parts = map(int, EMSCRIPTEN_VERSION.split('.'))
+    EMSCRIPTEN_VERSION_MAJOR = parts[0]
+    EMSCRIPTEN_VERSION_MINOR = parts[1]
+    EMSCRIPTEN_VERSION_TINY = parts[2]
+  except Exception, e:
+    logging.warning('emscripten version ' + EMSCRIPTEN_VERSION + ' lacks standard parts')
+    EMSCRIPTEN_VERSION_MAJOR = 0
+    EMSCRIPTEN_VERSION_MINOR = 0
+    EMSCRIPTEN_VERSION_TINY = 0
+    raise e
 except Exception, e:
   logging.error('cannot find emscripten version ' + str(e))
   EMSCRIPTEN_VERSION = 'unknown'
@@ -438,7 +446,7 @@ def check_sanity(force=False):
     try:
       subprocess.call([JAVA, '-version'], stdout=PIPE, stderr=PIPE)
     except:
-      logging.warning('java does not seem to exist, required for closure compiler. -O2 and above will fail. You need to define JAVA in ~/.emscripten')
+      logging.warning('java does not seem to exist, required for closure compiler, which is optional (define JAVA in ~/.emscripten if you want it)')
 
     if not os.path.exists(CLOSURE_COMPILER):
      logging.warning('Closure compiler (%s) does not exist, check the paths in %s. -O2 and above will fail' % (CLOSURE_COMPILER, EM_CONFIG))
@@ -608,7 +616,7 @@ def apply_configuration():
   TEMP_DIR = configuration.TEMP_DIR
 apply_configuration()
 
-logging.basicConfig(format='%(levelname)-8s %(name)s: %(message)s')
+logging.basicConfig(format='%(levelname)-8s %(name)s: %(message)s') # can add  %(asctime)s  to see timestamps
 def set_logging():
   logger = logging.getLogger()
   logger.setLevel(logging.DEBUG if os.environ.get('EMCC_DEBUG') else logging.INFO)
@@ -667,7 +675,10 @@ try:
 except:
   COMPILER_OPTS = []
 COMPILER_OPTS = COMPILER_OPTS + [#'-fno-threadsafe-statics', # disabled due to issue 1289
-                                 '-target', LLVM_TARGET]
+                                 '-target', LLVM_TARGET,
+                                 '-D__EMSCRIPTEN_major__=' + str(EMSCRIPTEN_VERSION_MAJOR),
+                                 '-D__EMSCRIPTEN_minor__=' + str(EMSCRIPTEN_VERSION_MINOR),
+                                 '-D__EMSCRIPTEN_tiny__=' + str(EMSCRIPTEN_VERSION_TINY)]
 
 # COMPILER_STANDARDIZATION_OPTS: Options to correct various predefined macro options.
 COMPILER_STANDARDIZATION_OPTS = []
@@ -708,7 +719,7 @@ if USE_EMSDK:
                      path_from_root('system', 'include'),
                      path_from_root('system', 'include', 'emscripten'),
                      path_from_root('system', 'include', 'libc'),
-                     path_from_root('system', 'include', 'gfx'),
+                     path_from_root('system', 'lib', 'libc', 'musl', 'arch', 'js'),
                      path_from_root('system', 'include', 'SDL'),
   ]
   
@@ -910,6 +921,14 @@ class Settings2(type):
         raise AttributeError
 
     def __setattr__(self, attr, value):
+      if not attr in self.attrs:
+        import difflib
+        logging.warning('''Assigning a non-existent settings attribute "%s"''' % attr)
+        suggestions = ', '.join(difflib.get_close_matches(attr, self.attrs.keys()))
+        if suggestions:
+          logging.warning(''' - did you mean one of %s?''' % suggestions)
+        logging.warning(''' - perhaps a typo in emcc's  -s X=Y  notation?''')
+        logging.warning(''' - (see src/settings.js for valid values)''')
       self.attrs[attr] = value
 
   __instance = None
@@ -1003,7 +1022,7 @@ class Building:
 
     # Append the Emscripten toolchain file if the user didn't specify one.
     if not has_substr(args, '-DCMAKE_TOOLCHAIN_FILE'):
-      args.append('-DCMAKE_TOOLCHAIN_FILE=' + path_from_root('cmake', 'Platform', 'Emscripten.cmake'))
+      args.append('-DCMAKE_TOOLCHAIN_FILE=' + path_from_root('cmake', 'Modules', 'Platform', 'Emscripten.cmake'))
 
     # On Windows specify MinGW Makefiles if we have MinGW and no other toolchain was specified, to avoid CMake
     # pulling in a native Visual Studio, or Unix Makefiles.
@@ -1018,16 +1037,21 @@ class Building:
       return
     if env is None:
       env = Building.get_building_env()
-    env['EMMAKEN_JUST_CONFIGURE'] = '1'
     if 'cmake' in args[0]:
+      # Note: EMMAKEN_JUST_CONFIGURE shall not be enabled when configuring with CMake. This is because CMake
+      #       does expect to be able to do config-time builds with emcc.
       args = Building.handle_CMake_toolchain(args, env)
+    else:
+      # When we configure via a ./configure script, don't do config-time compilation with emcc, but instead
+      # do builds natively with Clang. This is a heuristic emulation that may or may not work. 
+      env['EMMAKEN_JUST_CONFIGURE'] = '1'
     try:
       process = Popen(args, stdout=stdout, stderr=stderr, env=env)
       process.communicate()
     except Exception, e:
       logging.error('Exception thrown when invoking Popen in configure with args: "%s"!' % ' '.join(args))
       raise
-    del env['EMMAKEN_JUST_CONFIGURE']
+    if 'EMMAKEN_JUST_CONFIGURE' in env: del env['EMMAKEN_JUST_CONFIGURE']
     if process.returncode is not 0:
       logging.error('Configure step failed with non-zero return code ' + str(process.returncode) + '! Command line: ' + str(args))
       raise subprocess.CalledProcessError(cmd=args, returncode=process.returncode)
@@ -1893,6 +1917,14 @@ def check_execute(cmd, *args, **kw):
     logging.error("'%s' failed with output:\n%s" % (" ".join(e.cmd), e.output))
     raise
 
+def check_call(cmd, *args, **kw):
+  try:
+    subprocess.check_call(cmd, *args, **kw)
+    logging.debug("Successfuly executed %s" % " ".join(cmd))
+  except subprocess.CalledProcessError as e:
+    logging.error("'%s' failed" % " ".join(cmd))
+    raise
+
 def suffix(name):
   parts = name.split('.')
   if len(parts) > 1:
@@ -1914,6 +1946,15 @@ def safe_move(src, dst):
   if src == dst:
     return
   shutil.move(src, dst)
+
+def safe_copy(src, dst):
+  src = os.path.abspath(src)
+  dst = os.path.abspath(dst)
+  if os.path.isdir(dst):
+    dst = os.path.join(dst, os.path.basename(src))
+  if src == dst:
+    return
+  shutil.copyfile(src, dst)
 
 import js_optimizer
 

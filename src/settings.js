@@ -231,6 +231,9 @@ var LABEL_FUNCTION_FILTERS = []; // Filters for function label debug.
                                  // When the array is empty, the filter is disabled.
 var EXCEPTION_DEBUG = 0; // Print out exceptions in emscriptened code. Does not work in asm.js mode
 
+var DEMANGLE_SUPPORT = 0; // If 1, build in libcxxabi's full c++ demangling code, to allow stackTrace()
+                          // to emit fully proper demangled c++ names
+
 var LIBRARY_DEBUG = 0; // Print out when we enter a library call (library*.js). You can also unset
                        // Runtime.debug at runtime for logging to cease, and can set it when you
                        // want it back. A simple way to set it in C++ is
@@ -289,6 +292,22 @@ var DISABLE_EXCEPTION_CATCHING = 0; // Disables generating code to actually catc
 var EXCEPTION_CATCHING_WHITELIST = [];  // Enables catching exception in the listed functions only, if
                                         // DISABLE_EXCEPTION_CATCHING = 2 is set
 
+// For more explanations of this option, please visit
+// https://github.com/kripken/emscripten/wiki/Asyncify
+var ASYNCIFY = 0; // Whether to enable asyncify transformation
+                  // This allows to inject some async functions to the C code that appear to be sync
+                  // e.g. emscripten_sleep
+var ASYNCIFY_FUNCTIONS = ['emscripten_sleep', // Functions that call any funcion in the list, directly or indirectly
+                          'emscripten_wget',  // will be transformed
+                          'emscripten_yield'];
+var ASYNCIFY_WHITELIST = ['qsort',   // Functions in this list are never considered async, even if they appear in ASYNCIFY_FUNCTIONS
+                          'trinkle', // In the asyncify transformation, any function that calls a function pointer is considered async 
+                          '__toread', // This whitelist is useful when a function is known to be sync
+                          '__uflow',  // currently this link contains some functions in libc
+                          '__fwritex', 
+                          'MUSL_vfprintf']; 
+                                                                                                    
+
 var EXECUTION_TIMEOUT = -1; // Throw an exception after X seconds - useful to debug infinite loops
 var CHECK_OVERFLOWS = 0; // Add code that checks for overflows in integer math operations.
                          // There is currently not much to do to handle overflows if they occur.
@@ -327,6 +346,13 @@ var MEMFS_APPEND_TO_TYPED_ARRAYS = 0; // If set to nonzero, MEMFS will always ut
                                       // for appending data to files. The default behavior is to use typed arrays for files
                                       // when the file size doesn't change after initial creation, and for files that do
                                       // change size, use normal JS arrays instead.
+var NO_FILESYSTEM = 0; // If set, does not build in any filesystem support. Useful if you are just doing pure
+                       // computation, but not reading files or using any streams (including fprintf, and other
+                       // stdio.h things) or anything related. The one exception is there is partial support for printf,
+                       // and puts, hackishly.
+var NO_BROWSER = 0; // If set, disables building in browser support using the Browser object. Useful if you are
+                    // just doing pure computation in a library, and don't need any browser capabilities like a main loop
+                    // (emscripten_set_main_loop), or setTimeout, etc.
 
 var USE_BSS = 1; // https://en.wikipedia.org/wiki/.bss
                  // When enabled, 0-initialized globals are sorted to the end of the globals list,
@@ -336,6 +362,9 @@ var USE_BSS = 1; // https://en.wikipedia.org/wiki/.bss
 var NAMED_GLOBALS = 0; // If 1, we use global variables for globals. Otherwise
                        // they are referred to by a base plus an offset (called an indexed global),
                        // saving global variables but adding runtime overhead.
+
+var NODE_STDOUT_FLUSH_WORKAROUND = 1; // Whether or not to work around node issues with not flushing stdout. This
+                                      // can cause unnecessary whitespace to be printed.
 
 var EXPORTED_FUNCTIONS = ['_main', '_malloc'];
                                     // Functions that are explicitly exported. These functions are kept alive
@@ -520,9 +549,12 @@ var NO_DYNAMIC_EXECUTION = 0; // When enabled, we do not emit eval() and new Fun
                               // privileged firefox app, etc.)
 
 var RUNNING_JS_OPTS = 0; // whether js opts will be run, after the main compiler
+var RUNNING_FASTCOMP = 1; // whether we are running the fastcomp backend
 
 var COMPILER_ASSERTIONS = 0; // costly (slow) compile-time assertions
 var COMPILER_FASTPATHS = 1; // use fast-paths to speed up compilation
+
+var EMSCRIPTEN_TRACING = 0; // Add some calls to emscripten tracing APIs
 
 // Compiler debugging options
 var DEBUG_TAGS_SHOWING = [];
@@ -536,6 +568,13 @@ var DEBUG_TAGS_SHOWING = [];
   //    unparsedFunctions
   //    metadata
   //    legalizer
+
+// For internal use only
+var ORIGINAL_EXPORTED_FUNCTIONS = [];
+var CORRECT_OVERFLOWS_LINES = [];
+var CORRECT_SIGNS_LINES = [];
+var CORRECT_ROUNDINGS_LINES = [];
+var SAFE_HEAP_LINES = [];
 
 // The list of defines (C_DEFINES) was moved into struct_info.json in the same directory.
 // That file is automatically parsed by tools/gen_struct_info.py.

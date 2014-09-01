@@ -230,7 +230,9 @@ var LibraryGLUT = {
 
       // cross-browser wheel delta
       var e = window.event || event; // old IE support
+      // Note the minus sign that flips browser wheel direction (positive direction scrolls page down) to native wheel direction (positive direction is mouse wheel up)
       var delta = -Browser.getMouseWheelDelta(event);
+      delta = (delta == 0) ? 0 : (delta > 0 ? Math.max(delta, 1) : Math.min(delta, -1)); // Quantize to integer so that minimum scroll is at least +/- 1.
 
       var button = 3; // wheel up
       if (delta < 0) {
@@ -432,6 +434,81 @@ var LibraryGLUT = {
     GLUT.mouseFunc = func;
   },
 
+  glutSetCursor: function(cursor) {
+    var cursorStyle = 'auto';
+    switch(cursor) {
+      case 0x0000: /* GLUT_CURSOR_RIGHT_ARROW */
+        // No equivalent css cursor style, fallback to 'auto'
+        break;
+      case 0x0001: /* GLUT_CURSOR_LEFT_ARROW */
+        // No equivalent css cursor style, fallback to 'auto'
+        break;
+      case 0x0002: /* GLUT_CURSOR_INFO */
+        cursorStyle = 'pointer';
+        break;
+      case 0x0003: /* GLUT_CURSOR_DESTROY */
+        // No equivalent css cursor style, fallback to 'auto'
+        break;
+      case 0x0004: /* GLUT_CURSOR_HELP */
+        cursorStyle = 'help';
+        break;
+      case 0x0005: /* GLUT_CURSOR_CYCLE */
+        // No equivalent css cursor style, fallback to 'auto'
+        break;
+      case 0x0006: /* GLUT_CURSOR_SPRAY */
+        // No equivalent css cursor style, fallback to 'auto'
+        break;
+      case 0x0007: /* GLUT_CURSOR_WAIT */
+        cursorStyle = 'wait';
+        break;
+      case 0x0008: /* GLUT_CURSOR_TEXT */
+        cursorStyle = 'text';
+        break;
+      case 0x0009: /* GLUT_CURSOR_CROSSHAIR */
+      case 0x0066: /* GLUT_CURSOR_FULL_CROSSHAIR */
+        cursorStyle = 'crosshair';
+        break;
+      case 0x000A: /* GLUT_CURSOR_UP_DOWN */
+        cursorStyle = 'ns-resize';
+        break;
+      case 0x000B: /* GLUT_CURSOR_LEFT_RIGHT */
+        cursorStyle = 'ew-resize';
+        break;
+      case 0x000C: /* GLUT_CURSOR_TOP_SIDE */
+        cursorStyle = 'n-resize';
+        break;
+      case 0x000D: /* GLUT_CURSOR_BOTTOM_SIDE */
+        cursorStyle = 's-resize';
+        break;
+      case 0x000E: /* GLUT_CURSOR_LEFT_SIDE */
+        cursorStyle = 'w-resize';
+        break;
+      case 0x000F: /* GLUT_CURSOR_RIGHT_SIDE */
+        cursorStyle = 'e-resize';
+        break;
+      case 0x0010: /* GLUT_CURSOR_TOP_LEFT_CORNER */
+        cursorStyle = 'nw-resize';
+        break;
+      case 0x0011: /* GLUT_CURSOR_TOP_RIGHT_CORNER */
+        cursorStyle = 'ne-resize';
+        break;
+      case 0x0012: /* GLUT_CURSOR_BOTTOM_RIGHT_CORNER */
+        cursorStyle = 'se-resize';
+        break;
+      case 0x0013: /* GLUT_CURSOR_BOTTOM_LEFT_CORNER */
+        cursorStyle = 'sw-resize';
+        break;
+      case 0x0064: /* GLUT_CURSOR_INHERIT */
+        break;
+      case 0x0065: /* GLUT_CURSOR_NONE */
+        cursorStyle = 'none';
+        break;
+      default:
+        throw "glutSetCursor: Unknown cursor type: " + cursor;
+    }
+    Module['canvas'].style.cursor = cursorStyle;
+  },
+  
   glutCreateWindow__deps: ['$Browser'],
   glutCreateWindow: function(name) {
     var contextAttributes = {

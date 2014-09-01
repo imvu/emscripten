@@ -198,7 +198,6 @@ var LibraryJSEvents = {
     },
 
     fillMouseEventData: function(eventStruct, e) {
-      var rect = Module['canvas'].getBoundingClientRect();
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.timestamp, 'JSEvents.tick()', 'double') }}};
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.screenX, 'e.screenX', 'i32') }}};
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.screenY, 'e.screenY', 'i32') }}};
@@ -212,8 +211,15 @@ var LibraryJSEvents = {
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.buttons, 'e.buttons', 'i16') }}};
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.movementX, 'e["movementX"] || e["mozMovementX"] || e["webkitMovementX"] || (e.screenX-JSEvents.previousScreenX)', 'i32') }}};
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.movementY, 'e["movementY"] || e["mozMovementY"] || e["webkitMovementY"] || (e.screenY-JSEvents.previousScreenY)', 'i32') }}};
-      {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.canvasX, 'e.clientX - rect.left', 'i32') }}};
-      {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.canvasY, 'e.clientY - rect.top', 'i32') }}};
+
+      if (Module['canvas']) {
+        var rect = Module['canvas'].getBoundingClientRect();
+        {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.canvasX, 'e.clientX - rect.left', 'i32') }}};
+        {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.canvasY, 'e.clientY - rect.top', 'i32') }}};
+      } else { // Canvas is not initialized, return 0.
+        {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.canvasX, '0', 'i32') }}};
+        {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenMouseEvent.canvasY, '0', 'i32') }}};
+      }
       JSEvents.previousScreenX = e.screenX;
       JSEvents.previousScreenY = e.screenY;
     },
@@ -765,10 +771,18 @@ var LibraryJSEvents = {
         {{{ makeSetValue('eventStruct+i*8', C_STRUCTS.EmscriptenGamepadEvent.axis, 'e.axes[i]', 'double') }}};
       }
       for(var i = 0; i < e.buttons.length; ++i) {
-        {{{ makeSetValue('eventStruct+i*8', C_STRUCTS.EmscriptenGamepadEvent.analogButton, 'e.buttons[i].value', 'double') }}};
+        if (typeof(e.buttons[i]) === 'object') {
+          {{{ makeSetValue('eventStruct+i*8', C_STRUCTS.EmscriptenGamepadEvent.analogButton, 'e.buttons[i].value', 'double') }}};
+        } else {
+          {{{ makeSetValue('eventStruct+i*8', C_STRUCTS.EmscriptenGamepadEvent.analogButton, 'e.buttons[i]', 'double') }}};
+        }
       }
       for(var i = 0; i < e.buttons.length; ++i) {
-        {{{ makeSetValue('eventStruct+i*4', C_STRUCTS.EmscriptenGamepadEvent.digitalButton, 'e.buttons[i].pressed', 'i32') }}};
+        if (typeof(e.buttons[i]) === 'object') {
+          {{{ makeSetValue('eventStruct+i*4', C_STRUCTS.EmscriptenGamepadEvent.digitalButton, 'e.buttons[i].pressed', 'i32') }}};
+        } else {
+          {{{ makeSetValue('eventStruct+i*4', C_STRUCTS.EmscriptenGamepadEvent.digitalButton, 'e.buttons[i] == 1.0', 'i32') }}};
+        }
       }
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenGamepadEvent.connected, 'e.connected', 'i32') }}};
       {{{ makeSetValue('eventStruct', C_STRUCTS.EmscriptenGamepadEvent.index, 'e.index', 'i32') }}};
@@ -1248,27 +1262,39 @@ var LibraryJSEvents = {
   },
   
   emscripten_set_gamepadconnected_callback: function(userData, useCapture, callbackfunc) {
-    if (!navigator.getGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
+    if (!navigator.getGamepads && !navigator.webkitGetGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
     JSEvents.registerGamepadEventCallback(window, userData, useCapture, callbackfunc, {{{ cDefine('EMSCRIPTEN_EVENT_GAMEPADCONNECTED') }}}, "gamepadconnected");
     return {{{ cDefine('EMSCRIPTEN_RESULT_SUCCESS') }}};
   },
   
   emscripten_set_gamepaddisconnected_callback: function(userData, useCapture, callbackfunc) {
-    if (!navigator.getGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
+    if (!navigator.getGamepads && !navigator.webkitGetGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
     JSEvents.registerGamepadEventCallback(window, userData, useCapture, callbackfunc, {{{ cDefine('EMSCRIPTEN_EVENT_GAMEPADDISCONNECTED') }}}, "gamepaddisconnected");
     return {{{ cDefine('EMSCRIPTEN_RESULT_SUCCESS') }}};
  },
   
   emscripten_get_num_gamepads: function() {
-    if (!navigator.getGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
-    return navigator.getGamepads().length;
+    if (!navigator.getGamepads && !navigator.webkitGetGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
+    if (navigator.getGamepads) {
+      return navigator.getGamepads().length;
+    } else if (navigator.webkitGetGamepads) {
+      return navigator.webkitGetGamepads().length;
+    }
   },
   
   emscripten_get_gamepad_status: function(index, gamepadState) {
-    if (!navigator.getGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
-    var gamepads = navigator.getGamepads();
+    if (!navigator.getGamepads && !navigator.webkitGetGamepads) return {{{ cDefine('EMSCRIPTEN_RESULT_NOT_SUPPORTED') }}};
+    var gamepads;
+    if (navigator.getGamepads) {
+      gamepads = navigator.getGamepads();
+    } else if (navigator.webkitGetGamepads) {
+      gamepads = navigator.webkitGetGamepads();
+    }
     if (index < 0 || index >= gamepads.length) {
       return {{{ cDefine('EMSCRIPTEN_RESULT_INVALID_PARAM') }}};
+    }
+    if (typeof gamepads[index] === 'undefined') {
+      return {{{ cDefine('EMSCRIPTEN_RESULT_NO_DATA') }}};
     }
     JSEvents.fillGamepadEventData(gamepadState, gamepads[index]);
     return {{{ cDefine('EMSCRIPTEN_RESULT_SUCCESS') }}};
@@ -1298,6 +1324,64 @@ var LibraryJSEvents = {
     return {{{ cDefine('EMSCRIPTEN_RESULT_SUCCESS') }}};
   },
   
+  emscripten_webgl_init_context_attributes: function(attributes) {
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.alpha, 1, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.depth, 1, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.stencil, 0, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.antialias, 1, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.premultipliedAlpha, 1, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.preserveDrawingBuffer, 0, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.preferLowPowerToHighPerformance, 0, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.failIfMajorPerformanceCaveat, 0, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.majorVersion, 1, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.minorVersion, 0, 'i32') }}};
+    {{{ makeSetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.enableExtensionsByDefault, 1, 'i32') }}};
+  },
+
+  emscripten_webgl_create_context: function(target, attributes) {
+    var contextAttributes = {};
+    contextAttributes.alpha = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.alpha, 'i32') }}};
+    contextAttributes.depth = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.depth, 'i32') }}};
+    contextAttributes.stencil = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.stencil, 'i32') }}};
+    contextAttributes.antialias = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.antialias, 'i32') }}};
+    contextAttributes.premultipliedAlpha = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.premultipliedAlpha, 'i32') }}};
+    contextAttributes.preserveDrawingBuffer = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.preserveDrawingBuffer, 'i32') }}};
+    contextAttributes.preferLowPowerToHighPerformance = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.preferLowPowerToHighPerformance, 'i32') }}};
+    contextAttributes.failIfMajorPerformanceCaveat = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.failIfMajorPerformanceCaveat, 'i32') }}};
+    var majorVersion = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.majorVersion, 'i32') }}};
+    var minorVersion = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.minorVersion, 'i32') }}};
+    var enableExtensionsByDefault = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.enableExtensionsByDefault, 'i32') }}};
+
+    if (!target) {
+      target = Module['canvas'];
+    } else {
+      target = JSEvents.findEventTarget(target);
+    }
+    var contextHandle = GL.createContext(target, contextAttributes);
+    return contextHandle;
+  },
+
+  emscripten_webgl_make_context_current: function(contextHandle) {
+    var success = GL.makeContextCurrent(contextHandle);
+    return success ? {{{ cDefine('EMSCRIPTEN_RESULT_SUCCESS') }}} : {{{ cDefine('EMSCRIPTEN_RESULT_INVALID_PARAM') }}};
+  },
+
+  emscripten_webgl_get_current_context: function() {
+    return GL.currentContext ? GL.currentContext.handle : 0;
+  },
+
+  emscripten_webgl_destroy_context: function(contextHandle) {
+    GL.deleteContext(contextHandle);
+  },
+
+  emscripten_webgl_enable_extension: function(contextHandle, extension) {
+    var context = GL.getContext(contextHandle);
+    var extString = Pointer_stringify(extension);
+    if (extString.indexOf('GL_') == 0) extString = extString.substr(3); // Allow enabling extensions both with "GL_" prefix and without.
+    var ext = context.GLctx.getExtension(extString);
+    return ext ? 1 : 0;
+  },
+
   emscripten_set_webglcontextlost_callback: function(target, userData, useCapture, callbackfunc) {
     JSEvents.registerWebGlEventCallback(target, userData, useCapture, callbackfunc, {{{ cDefine('EMSCRIPTEN_EVENT_WEBGLCONTEXTLOST') }}}, "webglcontextlost");
     return {{{ cDefine('EMSCRIPTEN_RESULT_SUCCESS') }}};
