@@ -171,6 +171,10 @@ EXPORTED_FUNCTIONS = set(EXPORTED_FUNCTIONS);
 EXPORTED_GLOBALS = set(EXPORTED_GLOBALS);
 EXCEPTION_CATCHING_WHITELIST = set(EXCEPTION_CATCHING_WHITELIST);
 
+// TODO: Implement support for proper preprocessing, e.g. "#if A || B" and "#if defined(A) || defined(B)" to
+// avoid needing this here.
+USES_GL_EMULATION = FULL_ES2 || LEGACY_GL_EMULATION;
+
 DEAD_FUNCTIONS.forEach(function(dead) {
   DEFAULT_LIBRARY_FUNCS_TO_INCLUDE.push(dead.substr(1));
 });
@@ -179,6 +183,10 @@ DEAD_FUNCTIONS = numberedSet(DEAD_FUNCTIONS);
 RUNTIME_DEBUG = LIBRARY_DEBUG || GL_DEBUG;
 
 if (SAFE_HEAP) USE_BSS = 0; // must initialize heap for safe heap
+
+if (NO_BROWSER) {
+  DEFAULT_LIBRARY_FUNCS_TO_INCLUDE = DEFAULT_LIBRARY_FUNCS_TO_INCLUDE.filter(function(func) { return func !== '$Browser' });
+}
 
 // Settings sanity checks
 
@@ -308,7 +316,7 @@ function compile(raw) {
 
 B = new Benchmarker();
 
-try {
+//try {
   if (ll_file) {
     if (phase === 'glue') {
       compile(';');
@@ -318,9 +326,33 @@ try {
       compile(ll_file); // we are given raw .ll
     }
   }
+/*
 } catch(err) {
-  printErr('aborting from js compiler due to exception: ' + err + ' | ' + err.stack);
+  if (err.indexOf('Aborting compilation due to previous errors') != -1) {
+    // Compiler failed on user error, print out the error message.
+    printErr(err + ' | ' + err.stack);
+  } else {
+    // Compiler failed on internal compiler error!
+    printErr('Internal compiler error in src/compiler.js! Please raise a bug report at https://github.com/kripken/emscripten/issues/ with a log of the build and the input files used to run. Exception message: ' + err + ' | ' + err.stack);
+  }
+
+  if (ENVIRONMENT_IS_NODE) {
+    // Work around a node.js bug where stdout buffer is not flushed at process exit:
+    // Instead of process.exit() directly, wait for stdout flush event.
+    // See https://github.com/joyent/node/issues/1669 and https://github.com/kripken/emscripten/issues/2582
+    // Workaround is based on https://github.com/RReverser/acorn/commit/50ab143cecc9ed71a2d66f78b4aec3bb2e9844f6
+    process['stdout']['once']('drain', function () {
+      process['exit'](1);
+    });
+    console.log(' '); // Make sure to print something to force the drain event to occur, in case the stdout buffer was empty.
+    // Work around another node bug where sometimes 'drain' is never fired - make another effort
+    // to emit the exit status, after a significant delay (if node hasn't fired drain by then, give up)
+    setTimeout(function() {
+      process['exit'](1);
+    }, 500);
+  } else throw err;
 }
+*/
 
 //var M = keys(tokenCacheMisses).map(function(m) { return [m, misses[m]] }).sort(function(a, b) { return a[1] - b[1] });
 //printErr(dump(M.slice(M.length-10)));

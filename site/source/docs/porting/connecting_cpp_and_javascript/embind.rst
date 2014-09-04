@@ -1,0 +1,612 @@
+.. _embind:
+
+===========================
+Embind (under-construction)
+===========================
+
+*Embind* is used to bind C++ functions and classes to JavaScript, so that the compiled code can be used in a natural way by "normal" JavaScript. 
+
+Embind has support for binding most C++ constructs, including those introduced in C++11 and C++14. Its main limitation is that it does not currently support raw pointers with complicated lifetime semantics.
+
+.. note:: *Embind* was inspired by *Boost.Python*. Eventually we also hope to implement *Boost.Python*-like raw pointer policies.
+
+This topic shows how to use :cpp:func:`EMSCRIPTEN_BINDINGS` blocks to create bindings for functions, classes, value types, pointers (including both raw and smart pointers), enums, and constants, and how to create bindings for abstract classes that can be overridden in JavaScript. It also briefly explains how to manage the memory of C++ object handles passed to the JavaScript.
+
+In addition to enabling compiled C++ from JavaScript, *Embind* provides the :ref:`emscripten::val <embind-val-guide>` class, which allows developers to call JavaScript classes from their C++.
+
+
+A quick example
+===============
+
+The following code uses :cpp:func:`EMSCRIPTEN_BINDINGS` block to expose the simple C++ ``lerp()`` :cpp:func:`function` to JavaScript.
+
+.. code:: cpp
+
+    // quick_example.cpp
+    #include <emscripten/bind.h>
+
+    using namespace emscripten;
+
+    float lerp(float a, float b, float t) {
+        return (1 - t) * a + t * b;
+    }
+
+    EMSCRIPTEN_BINDINGS(my_module) {
+        function("lerp", &lerp);
+    }
+
+To compile the above example using *embind*, we invoke *emcc* with the :ref:`bind <emcc-bind>` option: ``emcc --bind -o quick_example.js quick_example.cpp``. 
+
+The resulting **quick_example.js** file can be loaded as a node module or a script tag (shown below).
+
+.. code:: html
+
+    <!doctype html>
+    <html>
+      <script src="quick_example.js"></script>
+      <script>
+        document.write('lerp result: ' + Module.lerp(1, 2, 0.5));
+      </script>
+    </html>
+
+The :cpp:func:`EMSCRIPTEN_BINDINGS` are set up when the JavaScript file is initially loaded (at the same time as the global constructors). Notice that ``lerp()``'s parameter types and return type are automatically inferred by *embind*. All symbols exposed by *embind* are available on the Emscripten ``Module`` object.
+
+
+Classes
+=======
+
+Exposing classes to JavaScript requires a few more steps. For example:
+
+.. code:: cpp
+
+
+    class MyClass {
+    public:
+        MyClass(int x, std::string y)
+            : x(x)
+            , y(y)
+        {}
+
+        void incrementX() {
+            ++x;
+        }
+
+        int getX() const { return x; }
+        void setX(int x_) { x = x_; }
+
+        static std::string getStringFromInstance(const MyClass& instance) {
+            return instance.y;
+        }
+
+    private:
+        int x;
+        std::string y;
+    };
+
+    EMSCRIPTEN_BINDINGS(my_class_example) {
+        class_<MyClass>("MyClass")
+            .constructor<int, std::string>()
+            .function("incrementX", &MyClass::incrementX)
+            .property("x", &MyClass::getX, &MyClass::setX)
+            .class_function("getStringFromInstance", &MyClass::getStringFromInstance)
+            ;
+    }
+
+An instance of ``MyClass`` can then be created and used in JavaScript as shown below:
+
+.. code:: javascript
+
+    var instance = new Module.MyClass(10, "hello");
+    instance.incrementX();
+    instance.x; // 12
+    instance.x = 20; // 20
+    Module.MyClass.getStringFromInstance(instance); // "hello"
+    instance.delete();
+
+Memory management
+=================
+
+JavaScript, specifically ECMA-262 Edition 5.1, does not support finalizers or weak references with callbacks. 
+
+.. warning:: JavaScript code must explicitly delete any C++ object handles it has received, or the Emscripten heap will grow indefinitely.
+
+.. code:: javascript
+
+    var x = new Module.MyClass;
+    x.method();
+    x.delete();
+
+    var y = Module.myFunctionThatReturnsClassInstance();
+    y.method();
+    y.delete();
+
+Value types
+===========
+
+Manual memory management for basic types is onerous, so *embind* provides support for value types. :cpp:class:`Value arrays <value_array>` are converted to and from JavaScript Arrays and :cpp:class:`value objects <value_object>` are converted to and from JavaScript Objects.
+
+Consider the example below:
+
+.. code:: cpp
+
+    struct Point2f {
+        float x;
+        float y;
+    };
+
+    struct PersonRecord {
+        std::string name;
+        int age;
+    };
+
+    PersonRecord findPersonAtLocation(Point2f);
+
+    EMSCRIPTEN_BINDINGS(my_value_example) {
+        value_array<Point2f>("Point2f")
+            .element(&Point2f::x)
+            .element(&Point2f::y)
+            ;
+
+        value_object<PersonRecord>("PersonRecord")
+            .field("name", &PersonRecord::name)
+            .field("age", &PersonRecord::age)
+            ;
+
+        function("findPersonAtLocation", &findPersonAtLocation);
+    }
+
+The JavaScript code does not need to worry about lifetime management.
+
+.. code:: javascript
+
+    var person = Module.findPersonAtLocation([10.2, 156.5]);
+    console.log('Found someone! Their name is ' + person.name + ' and they are ' + person.age + ' years old');
+
+	
+Advanced class concepts
+=======================
+
+Raw pointers
+------------
+
+Because raw pointers have unclear lifetime semantics, *embind* requires their use to be marked with ``allow_raw_pointers()``.
+
+.. code:: cpp
+
+    class C {};
+    C* passThrough(C* ptr) { return ptr; }
+    EMSCRIPTEN_BINDINGS(raw_pointers) {
+        class_<C>("C");
+        function("passThrough", &passThrough, allow_raw_pointers());
+    }
+
+External constructors
+---------------------
+
+There are two ways to specify constructors on a class. The zero-argument template form invokes the natural constructor with the arguments specified in the template. However, if you pass a function pointer as the constructor, then invoking ``new`` from JavaScript calls the function and returns its result.
+
+.. code:: cpp
+
+    class C {}; // probably want to override operator delete
+    C* getInstanceFromPool() {
+        return pool.get();
+    }
+    EMSCRIPTEN_BINDINGS(external_constructors) {
+        class_<C>("C")
+            .constructor(&getInstanceFromPool)
+            ;
+    }
+
+Smart pointers
+--------------
+
+To manage object lifetime with smart pointers, *embind* must be told about the smart pointer type. For example, imagine managing a class C's lifetime with ``std::shared_ptr<C>``.
+
+.. code:: cpp
+
+    EMSCRIPTEN_BINDINGS(smart_pointers) {
+        class_<C>("C")
+            .constructor<>()
+            .smart_ptr<std::shared_ptr<C>>()
+            ;
+    }
+
+At this point, functions can return ``std::shared_ptr<C>`` or take ``std::shared_ptr<C>`` as arguments. However, ``new Module.C()`` would still return a raw pointer.
+
+To return a ``shared_ptr<C>`` from the constructor, write the following instead:
+
+.. code:: cpp
+
+    EMSCRIPTEN_BINDINGS(better_smart_pointers) {
+        class_<C>("C")
+            .smart_ptr_constructor(&std::make_shared<C>)
+            ;
+    }
+
+:cpp:func:`~class_::smart_ptr_constructor` automatically registers the smart pointer type. 
+
+unique_ptr
+++++++++++
+
+*embind* has built-in support for return values of type
+``std::unique_ptr``.
+
+Custom smart pointers
++++++++++++++++++++++
+
+To teach *embind* about custom smart pointer templates, specialize the :cpp:type:`smart_ptr_trait` template.
+
+Non-member-functions on the JavaScript prototype
+------------------------------------------------
+
+Methods on the JavaScript class prototype can be non-member functions, as long as the instance handle can be converted to the first argument of the non-member function. The classic example is when the function exposed to JavaScript does not exactly match the behavior of a C++ method.
+
+.. code:: cpp
+
+    struct Array10 {
+        int& get(size_t index) {
+            return data[index];
+        }
+        int data[10];
+    };
+
+    val Array10_get(Array10& arr, size_t index) {
+        if (index < 10) {
+            return val(arr.get(index));
+        } else {
+            return val::undefined();
+        }
+    }
+
+    EMSCRIPTEN_BINDINGS(non_member_functions) {
+        class_<Array10>("Array10")
+            .function("get", &Array10_get)
+            ;
+    }
+
+If JavaScript calls ``Array10.prototype.get`` with an invalid index, it will return ``undefined``.
+
+Deriving from C++ classes in JavaScript
+---------------------------------------
+
+If C++ classes have virtual or abstract member functions, it's possible to override them in JavaScript. Because JavaScript has no knowledge of the C++ vtable, *embind* needs a bit of glue code to convert C++ virtual function calls into JavaScript calls.
+
+Abstract methods
+++++++++++++++++
+
+Let's begin with a simple case: pure virtual functions that must be implemented in JavaScript.
+
+.. code:: cpp
+
+    struct Interface {
+        virtual void invoke(const std::string& str) = 0;
+    };
+
+    struct InterfaceWrapper : public wrapper<Interface> {
+        EMSCRIPTEN_WRAPPER(InterfaceWrapper);
+        void invoke(const std::string& str) {
+            return call<void>("invoke", str);
+        }
+    };
+
+    EMSCRIPTEN_BINDINGS(interface) {
+        class_<Interface>("Interface")
+            .function("invoke", &Interface::invoke, pure_virtual())
+            .allow_subclass<InterfaceWrapper>()
+            ;
+    }
+
+``allow_subclass`` adds two special methods to the Interface binding: ``extend`` and ``implement``. ``extend`` allows JavaScript to subclass in the style exemplified by **Backbone.js**. ``implement`` is used when you have a JavaScript object, perhaps provided by the browser or some other library, and you want to use it to implement a C++ interface.
+
+.. note:: Note the ``pure_virtual()`` annotation on the function binding. Specifying ``pure_virtual()`` allows JavaScript to throw a helpful error if the JavaScript class does not override ``invoke()``. Otherwise, you may run into confusing errors.
+
+
+``extend`` example
++++++++++++++++++++
+
+.. code:: javascript
+
+    var DerivedClass = Module.Interface.extend("Interface", {
+        // __construct and __destruct are optional.  They are included
+        // in this example for illustration purposes.
+        // If you override __construct or __destruct, don't forget to
+        // call the parent implementation!
+        __construct: function() {
+            this.__parent.__construct.call(this);
+        },
+        __destruct: function() {
+            this.__parent.__destruct.call(this);
+        },
+        invoke: function() {
+            // your code goes here
+        },
+    });
+
+    var instance = new DerivedClass;
+
+``implement`` example
++++++++++++++++++++++
+
+.. code:: javascript
+
+    var x = {
+        invoke: function(str) {
+            console.log('invoking with: ' + str);
+        }
+    };
+    var interfaceObject = Module.Interface.implement(x);
+
+Now ``interfaceObject`` can be passed to any function that takes an ``Interface`` pointer or reference.
+
+Non-abstract virtual methods
+++++++++++++++++++++++++++++
+
+If a C++ class has a non-pure virtual function, it can be overridden but does not have to be. This requires a slightly different wrapper implementation:
+
+.. code:: cpp
+
+    struct Base {
+        virtual void invoke(const std::string& str) {
+            // default implementation
+        }
+    };
+
+    struct BaseWrapper : public wrapper<Base> {
+        EMSCRIPTEN_WRAPPER(BaseWrapper);
+        void invoke(const std::string& str) {
+            return call<void>("invoke", str);
+        }
+    };
+
+    EMSCRIPTEN_BINDINGS(interface) {
+        class_<Base>("Base")
+            .allow_subclass<BaseWrapper>()
+            .function("invoke", optional_override([](Base& self, const std::string& str) {
+                return self.Base::invoke(str);
+            }))
+            ;
+    }
+
+When implementing ``Base`` with a JavaScript object, overriding ``invoke`` is optional. The special lambda binding for invoke is necessary to avoid infinite mutual recursion between the wrapper and JavaScript.
+
+Base classes
+------------
+
+.. code:: cpp
+
+    EMSCRIPTEN_BINDINGS(base_example) {
+        class_<BaseClass>("BaseClass");
+        class_<DerivedClass, base<BaseClass>>("DerivedClass");
+    }
+
+Any member functions defined on ``BaseClass`` are then accessible to instances of ``DerivedClass``. In addition, any function that accepts an instance of ``BaseClass`` can be given an instance of ``DerivedClass``.
+
+Automatic downcasting
++++++++++++++++++++++
+
+If a C++ class is polymorphic (that is, it has a virtual method), then *embind* supports automatic downcasting of function return values.
+
+.. code:: cpp
+
+    class Base { virtual ~Base() {} }; // the virtual makes Base and Derived polymorphic
+    class Derived : public Base {};
+    Base* getDerivedInstance() {
+        return new Derived;
+    }
+    EMSCRIPTEN_BINDINGS(automatic_downcasting) {
+        class_<Base>("Base");
+        class_<Derived, base<Base>>("Derived");
+        function("getDerivedInstance", &getDerivedInstance, allow_raw_pointers());
+    }
+
+Calling ``Module.getDerivedInstance`` from JavaScript will return a ``Derived`` instance handle from which all of ``Derived``'s methods are available.
+
+Note that the *embind* must understand the fully-derived type for automatic downcasting to work.
+
+Overloaded functions
+====================
+
+Constructors and functions can be overloaded on the number of arguments. *embind* does not support overloading based on type. When specifying an overload, use the :cpp:func:`select_overload` helper function to select the appropriate signature.
+
+.. code:: cpp
+
+    struct HasOverloadedMethods {
+        void foo();
+        void foo(int i);
+        void foo(float f) const;
+    };
+
+    EMSCRIPTEN_BINDING(overloads) {
+        class_<HasOverloadedMethods>("HasOverloadedMethods")
+            .function("foo", select_overload<void()>(&HasOverloadedMethods::foo))
+            .function("foo_int", select_overload<void(int)>(&HasOverloadedMethods::foo))
+            .function("foo_float", select_overload<void(float)const>(&HasOverloadedMethods::foo))
+            ;
+    }
+
+Enums
+=====
+
+embind's enumeration support works with both C++98 enums and C++11 "enum
+classes".
+
+.. code:: cpp
+
+
+    enum OldStyle {
+        OLD_STYLE_ONE,
+        OLD_STYLE_TWO
+    };
+
+    enum class NewStyle {
+        ONE,
+        TWO
+    };
+
+    EMSCRIPTEN_BINDINGS(my_enum_example) {
+        enum_<OldStyle>("OldStyle")
+            .value("ONE", OLD_STYLE_ONE)
+            .value("TWO", OLD_STYLE_TWO)
+            ;
+        enum_<NewStyle>("NewStyle")
+            .value("ONE", NewStyle::ONE)
+            .value("TWO", NewStyle::TWO)
+            ;
+    }
+
+In both cases, JavaScript accesses enumeration values as properties of the type.
+
+.. code:: javascript
+
+    Module.OldStyle.ONE;
+    Module.NewStyle.TWO;
+
+Constants
+=========
+
+To expose a C++ constant to JavaScript, simply write:
+
+.. code:: cpp
+
+    EMSCRIPTEN_BINDINGS(my_constant_example) {
+        constant("SOME_CONSTANT", SOME_CONSTANT);
+    }
+
+``SOME_CONSTANT`` can have any type known to *embind*.
+
+.. _embind-val-guide:
+
+Using ``val`` to transliterate JavaScript to C++
+================================================
+
+*Embind* provides a C++ class, :cpp:class:`emscripten::val`, which you can use to transliterate JavaScript code to C++. Using ``val`` you can call JavaScript objects from your C++, read and write their properties, or coerce them to C++ values like a ``bool``, ``int``, or ``std::string``.
+
+.. _Using-Web-Audio-API-from-Cpp-with-the-Embind-val-class:
+	
+The example below shows how you can use ``val`` to call the JavaScript `Web Audio API <https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API>`_ from C++:
+
+.. note:: This example is based on the excellent Web Audio tutorial: `Making sine, square, sawtooth and triangle waves <http://stuartmemo.com/making-sine-square-sawtooth-and-triangle-waves/>`_ (stuartmemo.com). There is an even simpler example in the :cpp:class:`emscripten::val` documentation.
+
+First consider the JavaScript below, which shows how to use the API:
+
+
+.. code-block:: javascript
+
+	// Get web audio api context
+	var AudioContext = window.AudioContext || window.webkitAudioContext;
+	
+	// Got an AudioContext: Create context and OscillatorNode
+	var context = new AudioContext();
+	var oscillator = context.createOscillator();
+	
+	//Configuring oscillator: set OscillatorNode type and frequency
+	oscillator.type = 'triangle';
+	oscillator.frequency.value = 261.63; // value in hertz - middle C
+	
+	//Playing	
+	oscillator.connect(context.destination);
+	oscillator.start();
+	
+	//All done!
+	
+The code can be transliterated to C++ using ``val``, as shown below:
+
+.. code-block:: cpp
+
+	#include <emscripten/val.h>
+	#include <stdio.h>
+	#include <math.h>
+
+	using namespace emscripten;
+
+	int main() {
+		val AudioContext = val::global("AudioContext");
+		if (!AudioContext.as<bool>()) {
+			printf("No global AudioContext, trying webkitAudioContext\n");
+			AudioContext = val::global("webkitAudioContext");
+		}
+				
+		printf("Got an AudioContext\n");
+		val context = AudioContext.new_();
+		val oscillator = context.call<val>("createOscillator");
+
+		printf("Configuring oscillator\n");
+		oscillator.set("type", val("triangle"));
+		oscillator["frequency"].set("value", val(261.63)); // Middle C
+
+		printf("Playing\n");
+		oscillator.call<void>("connect", context["destination"]);
+		oscillator.call<void>("start", 0);
+
+		printf("All done!\n");
+	}
+
+First we use :cpp:func:`~emscripten::val::global` to get the symbol for the global ``AudioContext`` object (or ``webkitAudioContext`` if that does not exist). We then use :cpp:func:`~emscripten::val::new_` to create the context, and from this context we can create an ``oscillator``, :cpp:func:`~emscripten::val::set` it's properties (again using ``val``) and then play the tone.
+
+The example can be compiled on the Linux terminal with:
+
+::
+
+	./emcc -O2 -Wall -Werror --bind -o oscillator.html oscillator.cpp
+
+
+
+
+Built-in type conversions
+=========================
+
+Out of the box, *embind* provides converters for many standard C++
+types:
+
++---------------------+-------------------------------------------------+
+| C++ type            | JavaScript type                                 |
++=====================+=================================================+
+| ``void``            | undefined                                       |
++---------------------+-------------------------------------------------+
+| ``bool``            | true or false                                   |
++---------------------+-------------------------------------------------+
+| ``char``            | Number                                          |
++---------------------+-------------------------------------------------+
+| ``signed char``     | Number                                          |
++---------------------+-------------------------------------------------+
+| ``unsigned char``   | Number                                          |
++---------------------+-------------------------------------------------+
+| ``short``           | Number                                          |
++---------------------+-------------------------------------------------+
+| ``unsigned short``  | Number                                          |
++---------------------+-------------------------------------------------+
+| ``int``             | Number                                          |
++---------------------+-------------------------------------------------+
+| ``unsigned int``    | Number                                          |
++---------------------+-------------------------------------------------+
+| ``long``            | Number                                          |
++---------------------+-------------------------------------------------+
+| ``unsigned long``   | Number                                          |
++---------------------+-------------------------------------------------+
+| ``float``           | Number                                          |
++---------------------+-------------------------------------------------+
+| ``double``          | Number                                          |
++---------------------+-------------------------------------------------+
+| ``std::string``     | ArrayBuffer, Uint8Array, Int8Array, or String   |
++---------------------+-------------------------------------------------+
+| ``std::wstring``    | String (UTF-16 code units)                      |
++---------------------+-------------------------------------------------+
+| ``emscripten::val`` | anything                                        |
++---------------------+-------------------------------------------------+
+
+For convenience, *embind* provides factory functions to register ``std::vector<T>`` and ``std::map<K, V>`` types:
+
+.. code:: cpp
+
+    EMSCRIPTEN_BINDINGS(stl_wrappers) {
+        register_vector<int>("VectorInt");
+        register_map<int,int>("MapIntInt");
+    }
+
+
+Performance
+===========
+
+At time of writing there has been no *comprehensive* testing of *embind* performance, either against standard benchmarks, or relative to :ref:`WebIDL-Binder`.
+
+The call overhead for simple functions has been measured at about 200 ns. While there is room for further optimisation, so far its performance in real-world applications has proved to be more than acceptable.

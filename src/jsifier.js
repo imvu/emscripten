@@ -207,7 +207,7 @@ function JSify(data, functionsOnly) {
     //dprint('jsifier const: ' + JSON.stringify(value) + ',' + type + '\n');
     if (value.intertype in PARSABLE_LLVM_FUNCTIONS) {
       return [finalizeLLVMFunctionCall(value)];
-    } else if (Runtime.isNumberType(type) || pointingLevels(type) >= 1) {
+    } else if (Compiletime.isNumberType(type) || pointingLevels(type) >= 1) {
       return [makeGlobalUse(indexizeFunctions(parseNumerical(value.value), type))];
     } else if (value.intertype === 'emptystruct') {
       return makeEmptyStruct(type);
@@ -282,7 +282,7 @@ function JSify(data, functionsOnly) {
       if (item.external) {
         if (LibraryManager.library[item.ident.slice(1)]) {
           constant = LibraryManager.library[item.ident.slice(1)];
-        } else if (Runtime.isNumberType(item.type) || isPointerType(item.type)) {
+        } else if (Compiletime.isNumberType(item.type) || isPointerType(item.type)) {
           constant = zeros(Runtime.getNativeFieldSize(item.type));
         } else {
           constant = makeEmptyStruct(item.type);
@@ -1314,7 +1314,7 @@ function JSify(data, functionsOnly) {
       return ret;
     }
     var catchTypeArray = item.catchables.map(finalizeLLVMParameter).map(function(element) { return asmCoercion(element, 'i32') }).join(',');
-    var ret = asmCoercion('___cxa_find_matching_catch(-1, -1' + (catchTypeArray.length > 0 ? ',' + catchTypeArray : '') +')', 'i32');
+    var ret = asmCoercion('___cxa_find_matching_catch(' + catchTypeArray +')', 'i32');
     if (USE_TYPED_ARRAYS == 2) {
       ret = makeVarDef(item.assignTo) + '$0 = ' + ret + '; ' + makeVarDef(item.assignTo) + '$1 = tempRet0;';
       item.assignTo = null;
@@ -1516,7 +1516,7 @@ function JSify(data, functionsOnly) {
 
     args = args.map(function(arg, i) { return indexizeFunctions(arg, argsTypes[i]) });
     if (ASM_JS) {
-      var ffiCall = (shortident in Functions.libraryFunctions || simpleIdent in Functions.libraryFunctions || byPointerForced || invoke || extCall || funcData.setjmpTable) &&
+      var ffiCall = (shortident in Functions.libraryFunctions || simpleIdent in Functions.libraryFunctions || ident in Functions.libraryFunctions || byPointerForced || invoke || extCall || funcData.setjmpTable) &&
                     !(simpleIdent in JS_MATH_BUILTINS);
       if (ffiCall) {
         args = args.map(function(arg, i) { return asmCoercion(arg, ensureValidFFIType(argsTypes[i])) });
@@ -1550,7 +1550,7 @@ function JSify(data, functionsOnly) {
                   } else {
                     var size = calcAllocatedSize(removeAllPointing(type));
                     ret = makeCopyValues(getFastValue('tempVarArgs', '+', offset), arg, size, null, null, varargsByVals[i], ',');
-                    offset += Runtime.forceAlign(size, Runtime.STACK_ALIGN);
+                    offset += RuntimeGenerator.forceAlign(size, Runtime.STACK_ALIGN);
                   }
                   return ret;
                 }).filter(function(arg) {
@@ -1906,8 +1906,10 @@ function JSify(data, functionsOnly) {
       print('}');
     }
     if (PROXY_TO_WORKER) {
+      print('if (ENVIRONMENT_IS_WORKER) {\n');
       print(read('webGLWorker.js'));
       print(read('proxyWorker.js'));
+      print('}');
     }
     if (DETERMINISTIC) {
       print(read('deterministic.js'));

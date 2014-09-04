@@ -54,7 +54,6 @@
          T isalpha_l
          T isblank_l
          T isdigit_l
-         T isxdigit
          T isxdigit_l
          T isalnum
          T isalnum_l
@@ -93,6 +92,12 @@
          T iswupper_l
          T iswxdigit
          T iswxdigit_l
+         T j0
+         T j0f
+         T j1
+         T j1f
+         T jn
+         T jnf
          T ldexp
          T ldexpf
          T ldexpl
@@ -242,3 +247,7 @@
          T wmemset
          T wprintf
          T fnmatch
+         T strsignal
+         T strcoll
+         T __strcoll_l
+         W strcoll_l
