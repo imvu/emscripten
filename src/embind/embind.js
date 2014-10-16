@@ -818,6 +818,10 @@ var LibraryEmbind = {
             "throwBindingError('function "+humanName+" called with ' + arguments.length + ' arguments, expected "+(argCount - 2)+" args!');\n" +
         "}\n";
 
+#if EMSCRIPTEN_TRACING
+    invokerFnBody += "Module.emscripten_trace_enter_context('embind::" + humanName + "');\n";
+#endif
+
     // Determine if we need to use a dynamic stack to store the destructors for the function parameters.
     // TODO: Remove this completely once all function invokers are being dynamically generated.
     var needsDestructorStack = false;
@@ -835,8 +839,8 @@ var LibraryEmbind = {
     }
 
     var dtorStack = needsDestructorStack ? "destructors" : "null";
-    var args1 = ["throwBindingError", "invoker", "fn", "runDestructors", "retType", "classParam"];
-    var args2 = [throwBindingError, cppInvokerFunc, cppTargetFunc, runDestructors, argTypes[0], argTypes[1]];
+    var args1 = ["Module", "throwBindingError", "invoker", "fn", "runDestructors", "retType", "classParam"];
+    var args2 = [Module, throwBindingError, cppInvokerFunc, cppTargetFunc, runDestructors, argTypes[0], argTypes[1]];
 
     if (isClassMethodFunc) {
         invokerFnBody += "var thisWired = classParam.toWireType("+dtorStack+", this);\n";
@@ -871,7 +875,15 @@ var LibraryEmbind = {
     }
 
     if (returns) {
-        invokerFnBody += "return retType.fromWireType(rv);\n";
+        invokerFnBody += "var ret = retType.fromWireType(rv);\n" +
+#if EMSCRIPTEN_TRACING
+                         "Module.emscripten_trace_exit_context();\n" +
+#endif
+                         "return ret;\n";
+    } else {
+#if EMSCRIPTEN_TRACING
+        invokerFnBody += "Module.emscripten_trace_exit_context();\n";
+#endif
     }
     invokerFnBody += "}\n";
 
