@@ -1290,7 +1290,7 @@ EMSCRIPTEN_BINDINGS(interface_tests) {
 
     class_<HeldAbstractClass, base<PolySecondBase>>("HeldAbstractClass")
         .smart_ptr<std::shared_ptr<HeldAbstractClass>>("shared_ptr<HeldAbstractClass>")
-        .allow_subclass<HeldAbstractClassWrapper, std::shared_ptr<HeldAbstractClassWrapper>>("HeldAbstractClassWrapper")
+        .allow_subclass<HeldAbstractClassWrapper, std::shared_ptr<HeldAbstractClassWrapper>>("HeldAbstractClassWrapper", "HeldAbstractClassWrapperPtr")
         .function("method", &HeldAbstractClass::method, pure_virtual())
         ;
     function("passHeldAbstractClass", &passHeldAbstractClass);
@@ -2665,7 +2665,7 @@ struct Holder {
 EMSCRIPTEN_BINDINGS(intrusive_pointers) {
     class_<IntrusiveClass>("IntrusiveClass")
         .smart_ptr_constructor("intrusive_ptr<IntrusiveClass>", &make_intrusive_ptr<IntrusiveClass>)
-        .allow_subclass<IntrusiveClassWrapper, intrusive_ptr<IntrusiveClassWrapper>>("IntrusiveClassWrapper")
+        .allow_subclass<IntrusiveClassWrapper, intrusive_ptr<IntrusiveClassWrapper>>("IntrusiveClassWrapper", "IntrusiveClassWrapperPtr")
         ;
 
     typedef Holder<intrusive_ptr<IntrusiveClass>> IntrusiveClassHolder;
