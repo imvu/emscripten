@@ -1168,7 +1168,7 @@ namespace emscripten {
         EMSCRIPTEN_ALWAYS_INLINE const class_& allow_subclass(
             const char* wrapperClassName,
             const char* pointerName,
-            ::emscripten::constructor<ConstructorArgs...> = ::emscripten::constructor<ConstructorArgs...>()
+            ::emscripten::constructor<ConstructorArgs...> = ::emscripten::constructor<>()
         ) const {
             using namespace internal;
 
