@@ -10,6 +10,9 @@
 #include <emscripten/trace.h>
 #endif
 
+// TODO DO NOT COMMIT
+void imvu_leak_record_allocation(const void *address, int32_t size);
+void imvu_leak_record_free(const void *address);
 
 #define __THROW
 #define __attribute_malloc__
@@ -4688,6 +4691,9 @@ void* dlmalloc(size_t bytes) {
 #if __EMSCRIPTEN__
         /* XXX Emscripten Tracing API. */
         emscripten_trace_record_allocation(mem, bytes);
+
+        // TODO DO NOT COMMIT
+        imvu_leak_record_allocation(mem, bytes);
 #endif
         return mem;
     }
@@ -4708,6 +4714,9 @@ void dlfree(void* mem) {
 #if __EMSCRIPTEN__
         /* XXX Emscripten Tracing API. */
         emscripten_trace_record_free(mem);
+
+        // TODO DO NOT COMMIT
+        imvu_leak_record_free(mem);
 #endif
         mchunkptr p  = mem2chunk(mem);
 #if FOOTERS
