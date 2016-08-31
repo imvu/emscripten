@@ -404,7 +404,7 @@ namespace emscripten {
         }
 
         template<typename... Args>
-        val operator()(Args&&... args) {
+        val operator()(Args&&... args) const {
             return internalCall(internal::_emval_call, std::forward<Args>(args)...);
         }
 
